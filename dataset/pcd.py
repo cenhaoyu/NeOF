@@ -1,5 +1,6 @@
 from dataset.utils import *
 import itertools
+import open3d as o3d
 # generate standard pointnormals matrix(n,6) from file
 def pc_normalize(pc):
     centroid = np.mean(pc, axis=0)
@@ -11,7 +12,16 @@ def pc_normalize(pc):
 def getPointNormalfromFile(csvfile):
     pointnormals=np.loadtxt(csvfile,dtype=float,delimiter=',')
     return pointnormals
-def getPointNormalfromPly(path,num,voxelsize,kcoverage):
+
+
+def _ensure_point_normals(point_cloud):
+    if len(point_cloud.normals) == len(point_cloud.points):
+        return
+    point_cloud.estimate_normals()
+    point_cloud.normalize_normals()
+
+
+def getPointNormalfromPly(path,num,voxelsize,kcoverage,target_height=None):
     ending=path.split(".")[-1]
     if ending=="obj":
         mesh = o3d.io.read_triangle_mesh(path,True)
@@ -19,18 +29,37 @@ def getPointNormalfromPly(path,num,voxelsize,kcoverage):
         pcd=o3d.geometry.TriangleMesh.sample_points_uniformly(mesh, number_of_points=num)
     elif ending=="ply":
         pcd = o3d.io.read_point_cloud(path)
-        pcd = pcd.voxel_down_sample(voxel_size=0.02)
+        mesh = None
+    else:
+        raise ValueError(f"Unsupported geometry format: {ending}")
 
-    maxbound=pcd.get_max_bound()
-    minbound=pcd.get_min_bound()
-    center=pcd.get_center()
-    size=maxbound-minbound
-    #normalize
-    points=np.asarray(pcd.points-center)/np.max(size)
-    scale=[np.max(size),center]
+    _ensure_point_normals(pcd)
+
+    raw_points = np.asarray(pcd.points, dtype=float)
+    if len(raw_points) == 0:
+        raise ValueError(f"Loaded geometry contains no points: {path}")
+    raw_maxbound = np.max(raw_points, axis=0)
+    raw_minbound = np.min(raw_points, axis=0)
+    raw_center = 0.5 * (raw_maxbound + raw_minbound)
+    raw_size = raw_maxbound - raw_minbound
+    raw_height = float(raw_size[2])
+    if raw_height <= 1e-8:
+        raise ValueError("Loaded geometry has near-zero height; cannot derive world scaling")
+    world_scale = 1.0 if target_height is None else float(target_height) / raw_height
+    if world_scale <= 0:
+        raise ValueError("target_height must be positive when provided")
+
+    points = (raw_points - raw_center[None, :]) * world_scale
     pcd.points=o3d.utility.Vector3dVector(points)
     if ending=='obj':
-        mesh.vertices=o3d.utility.Vector3dVector((np.asarray(mesh.vertices)-center)/scale[0])
+        mesh.vertices=o3d.utility.Vector3dVector((np.asarray(mesh.vertices, dtype=float)-raw_center[None, :]) * world_scale)
+    scale=[1.0,np.zeros(3, dtype=float)]
+    geometry_info = {
+        "source_height": raw_height,
+        "world_scale_from_source": world_scale,
+        "model_world_height": raw_height * world_scale,
+        "source_center": raw_center,
+    }
     #generatevoxelgrid
     voxelgrid = o3d.geometry.VoxelGrid.create_from_point_cloud(pcd,voxel_size=voxelsize)
     boundbox=np.asarray(voxelgrid.get_axis_aligned_bounding_box().get_box_points())
@@ -54,8 +83,6 @@ def getPointNormalfromPly(path,num,voxelsize,kcoverage):
     for i in range(len(voxelindex)):
         voxelnormals_surface[i]=np.mean(normals[np.where((point_index == voxelindex[i]).all(1))[0]],axis=0)
 
-    pointnormals=np.append(points,np.asarray(pcd.normals),axis=1)
     voxelnormals = np.append(voxelcenter_surface,voxelnormals_surface,axis=1)
-    pointnormals.astype(float)
-    return mesh if ending=="obj" else pcd,pointnormals,voxelnormals,minbound,scale
-
+    voxelnormals.astype(float)
+    return mesh if ending=="obj" else pcd,voxelnormals,minbound,scale,geometry_info

@@ -56,87 +56,71 @@ class Addparam(torch.nn.Module):
     torch.cuda.empty_cache()
     return x_world_field,nonzerojudge
 class AddAttention(torch.nn.Module):
-  def __init__(self, input_channel,output_channel,num_heads):
+  def __init__(self, input_channel,output_channel,num_heads,context_voxel_num=64,normal_voxel_num=8):
     super(AddAttention, self).__init__()
     self.num_heads = num_heads
     self.output_channel = output_channel
+    self.context_voxel_num = context_voxel_num
+    self.normal_voxel_num = normal_voxel_num
 
     assert output_channel % num_heads == 0
 
     self.depth = output_channel // num_heads
 
+    self.feature_mlp = nn.Sequential(
+        nn.Linear(input_channel, output_channel),
+        nn.ReLU(inplace=True),
+    )
     self.Wq = nn.Linear(output_channel, output_channel)
     self.Wk = nn.Linear(output_channel, output_channel)
-    self.fc = nn.Linear(input_channel, output_channel)
-    # self.position_encoding=GeometryPositionEncodingSine(1)
-  def calculate_x(self,x_world,voxel_point,voxel_normal,density=None):
-    #x_world(m,1,3) voxel_point(1,n,3) voxel_normal(n,3)
+
+  def calculate_x_voxelselect(self,x_world,voxel_point,voxel_normal,v,exclude_closest_context=False):
+    # x_world(m,1,3) voxel_point(n,3) voxel_normal(n,3) v(n,3)
     with torch.no_grad():
-      distance=torch.linalg.norm(x_world-voxel_point[:,:,:3],dim=-1)
-      x_normal=torch.mean(voxel_normal[torch.sort(distance,1)[1][:,:8]],1).unsqueeze(1) #(m,1,3)
-      cos = torch.nn.CosineSimilarity(dim=-1, eps=1e-6)
-      cos_similarity=cos(x_normal.repeat(1,len(voxel_normal),1),voxel_normal.unsqueeze(0).repeat(x_normal.shape[1],1,1)).unsqueeze(-1)
-    position_relative=x_world-voxel_point
-    x=torch.cat((position_relative,cos_similarity),-1)
-    if density != None:
-      density=density.repeat(x.shape[0],1)
-      x=torch.cat((x,density.unsqueeze(-1)),-1)
-    del distance,x_normal,cos_similarity,position_relative
-    torch.cuda.empty_cache()
-    torch.cuda.empty_cache()
-    torch.cuda.empty_cache()
-    torch.cuda.empty_cache()
-    return x
-  def calculate_x_voxelselect(self,x_world,voxel_point,voxel_normal,v,density=None):
-    #x_world(m,1,3) voxel_point(1,n,3) voxel_normal(n,3)
-    with torch.no_grad():
-      distance=torch.linalg.norm(x_world-voxel_point.unsqueeze(0)[:,:,:3],dim=-1)
-      voxel_point_select=voxel_point[torch.sort(distance,1)[1][:,:30]]
-      voxel_normal_select=voxel_normal[torch.sort(distance,1)[1][:,:30]]
-      v=v[torch.sort(distance,1)[1][:,:30]]
-      x_normal=torch.mean(voxel_normal[torch.sort(distance,1)[1][:,:8]],1).unsqueeze(1) #(m,1,3)
+      distance=torch.linalg.norm(x_world-voxel_point.unsqueeze(0),dim=-1)
+      sorted_index = torch.argsort(distance, dim=1)
+      start_index = 1 if exclude_closest_context and voxel_point.shape[0] > 1 else 0
+      available_context = max(voxel_point.shape[0] - start_index, 1)
+      context_num = min(self.context_voxel_num, available_context)
+      normal_num = min(self.normal_voxel_num, voxel_normal.shape[0])
+      context_index = sorted_index[:,start_index:start_index + context_num]
+      if context_index.shape[1] == 0:
+        context_index = sorted_index[:,:1]
+      normal_index = sorted_index[:,:normal_num]
+      voxel_point_select = voxel_point[context_index]
+      voxel_normal_select = voxel_normal[context_index]
+      v_select = v[context_index]
+      x_normal=torch.mean(voxel_normal[normal_index],1,keepdim=True)
       normal_relative=x_normal-voxel_normal_select
     position_relative=x_world-voxel_point_select
     x=torch.cat((position_relative,normal_relative),-1)
-    if density != None:
-      density=density.repeat(x.shape[0],1)
-      x=torch.cat((x,density.unsqueeze(-1)),-1)
-    del distance,x_normal,normal_relative,position_relative
-    torch.cuda.empty_cache()
-    torch.cuda.empty_cache()
-    torch.cuda.empty_cache()
-    torch.cuda.empty_cache()
-    return x,v
+    return x,v_select
     
-  def forward(self,x_world,voxel_point,voxel_normal,v,density=None,mask=None):
+  def forward(self,x_world,voxel_point,voxel_normal,v,density=None,mask=None,exclude_closest_context=False):
     #x_world (m,1,3)
-    #voxel_point (1,n,3)
+    #voxel_point (n,3)
     #voxel_normal (n,3)
-    #v (n,1)
-    ###get attention input x
-    x,v=self.calculate_x_voxelselect(x_world,voxel_point,voxel_normal,v,density)
-    # print(x.shape)
-    x=self.fc(x)
-    # x=self.position_encoding(x)
-    # print(x.shape)
+    #v (n,3)
+    x,v=self.calculate_x_voxelselect(
+        x_world,
+        voxel_point,
+        voxel_normal,
+        v,
+        exclude_closest_context=exclude_closest_context,
+    )
+    x=self.feature_mlp(x)
     batch_size = x.size(0)
+    context_size = x.size(1)
 
-    # Perform linear operation and split into h heads
-    Q = self.Wq(x).view(batch_size, -1, self.num_heads, self.depth).transpose(1,2)
-    K = self.Wk(x).view(batch_size, -1, self.num_heads, self.depth).transpose(1,2)
-    # V = self.Wv(v).view(batch_size, -1, self.num_heads, self.depth).transpose(1,2)
-    # Scaled Dot-Product Attention
-    # print(Q.shape,K.shape)
-    scores = torch.matmul(Q,K.transpose(-1,-2)) / np.sqrt(self.depth)
-    # print(scores.shape,v.shape)
+    query_feature = torch.mean(x, dim=1, keepdim=True)
+    Q = self.Wq(query_feature).view(batch_size, 1, self.num_heads, self.depth).transpose(1,2)
+    K = self.Wk(x).view(batch_size, context_size, self.num_heads, self.depth).transpose(1,2)
+    scores = torch.matmul(Q,K.transpose(-1,-2)).squeeze(-2) / np.sqrt(self.depth)
     if mask is not None:
         mask = mask.unsqueeze(1)
         scores = scores.masked_fill(mask == 0, -1e9)
     attention = torch.softmax(scores,dim=-1)
-    attention=attention.squeeze(1)
-    # apply attention to value
-    out = torch.matmul(attention,v).squeeze(-1)
-    # average heads
+    value = v.unsqueeze(1).expand(-1,self.num_heads,-1,-1)
+    out = torch.matmul(attention.unsqueeze(-2),value).squeeze(-2)
     out = torch.mean(out,dim=1)
-    # out= torch.mean(out,dim=1)
     return out

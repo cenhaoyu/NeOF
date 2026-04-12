@@ -1,0 +1,293 @@
+{
+  // Results are written under resultModel/, tensorboardModel/ and modelpath/ using this subdirectory.
+  // The final directory name is auto-suffixed with the active camera_constraint_shape,
+  // e.g. "random/brother/" becomes "random/brother_box/" or "random/brother_cylinder/".
+  "path": "random/brother/",
+
+  // Learning rate for camera translation updates in the gradient-based stage.
+  "lr1": 0.05,
+
+  // Learning rate for camera rotation updates in the gradient-based stage.
+  "lr2": 0.05,
+
+  // All geometry, camera poses and occupancy definitions below use world coordinates in meters.
+
+  // Camera intrinsics used by both optimization and evaluation.
+  "image_width": 1920,
+  "image_height": 1080,
+  "fx": 1400.0,
+  "fy": 1400.0,
+  "cx": 959.5,
+  "cy": 539.5,
+
+  // Map the toy model to a human-sized target in world coordinates.
+  "model_physical_height": 1.75,
+
+  // Preferred camera-to-surface distance used for reset proposals.
+  "preferred_distance": 2.625,
+
+  // Number of cameras to optimize jointly.
+  "cameranum": 4,
+
+  // Number of outer hybrid-optimization epochs.
+  "epoches": 2,
+
+  // Number of gradient-based pose refinement steps per outer epoch.
+  // 10 is a reasonable default after switching to the softer differentiable visibility surrogate.
+  "iterations": 5,
+
+  // Optimizer used for camera pose refinement. Supported: "Adam", "SGD".
+  "optimizer": "Adam",
+
+  // Target K-coverage value in the paper's coverage term.
+  "kcoverage": 3,
+
+  // Set to 1 for room-scale scenes, 0 for object-centric optimization.
+  "isscene": 0,
+
+  // Weight of the visibility/coverage loss term Lvis.
+  "wvis": 0.3,
+
+  // Weight of the camera-camera angle quality term Lcc.
+  "wcc": 0.5,
+
+  // Weight of the camera-object angle quality term Lco.
+  "wco": 0.2,
+
+  // Input mesh or point-cloud model to optimize camera placement for.
+  "modelname": "data/3D_model/1Brother/visual_geometry.obj",
+
+  // Number of sampled surface points used before voxelization.
+  "voxelnum": 30000,
+
+  // Voxel size for surface/support voxelization, in meters.
+  "voxelsize": 0.02,
+
+  // Hidden feature dimension of the attention-based neural observation field.
+  "field_hidden_dim": 32,
+
+  // Number of attention heads in the neural observation field.
+  "field_num_heads": 1,
+
+  // Number of nearest voxels used as local attention context for each query point.
+  "field_context_voxel_num": 64,
+
+  // Number of nearest voxels used to estimate the query normal direction.
+  "field_normal_voxel_num": 8,
+
+  // Learning rate for neural field fitting.
+  "field_lr": 0.001,
+
+  // Per-epoch decay factor for the neural field learning rate.
+  "field_lr_decay": 0.99,
+
+  // Maximum optimization steps for fitting the neural field in one outer epoch.
+  "field_fit_steps": 1000,
+
+  // Log interval for neural field fitting.
+  "field_fit_log_interval": 100,
+
+  // Whether to allow early stopping during neural field fitting.
+  "field_early_stop": false,
+
+  // Early-stop patience for neural field fitting, measured in optimization steps.
+  "field_early_stop_patience": 150,
+
+  // Minimum supervision-loss improvement required to reset the early-stop patience.
+  "field_early_stop_min_delta": 1e-06,
+
+  // Minimum number of field-fitting steps before early stopping is allowed.
+  "field_early_stop_min_steps": 300,
+
+  // Standard deviation of query-point jitter used during field supervision.
+  // This reduces the "query exactly copies itself" effect.
+  "field_query_jitter_std": 0.005,
+
+  // Exclude the closest voxel from the attention context during field supervision.
+  // This further discourages direct self-copy behavior.
+  "field_exclude_closest_context": true,
+
+  // Occupancy target prior
+  // Keep this enabled to use any occupancy-based mode below.
+  "occupancy_map_enable": true,
+  "occupancy_map_floor": 0.01,
+  "occupancy_map_normalize": "mean1",
+  
+  // ------------------------------
+  // Active mode: free_space_box + uniform
+  // Comment out this whole block when switching to another mode below.
+  // "occupancy_map_mode": "free_space_box",
+  // "occupancy_box_distribution": "uniform",
+  // "occupancy_box_min": [-0.875, 0.0, -0.875],
+  // "occupancy_box_max": [0.875, 0.525, 1.75],
+  // "occupancy_box_grid_step": 0.175,
+  // "show_occupancy_route": false,
+  // "show_occupancy_route_direction": false,
+
+  // ------------------------------
+  // Alternative mode: route_kde
+  // Uncomment this whole block and comment out the active block above.
+  // "occupancy_map_mode": "route_kde",
+  // "occupancy_map_file": "occupancy_brother_route_example.json",
+  // "occupancy_map_sigma_xyz": [0.14, 0.14, 0.21],
+  // "occupancy_map_route_step": 0.0525,
+  // "show_occupancy_route": true,
+  // "show_occupancy_route_direction": true,
+
+  // ------------------------------
+  // Alternative mode: free_space_box + gaussian
+  // Uncomment this whole block and comment out the active block above.
+  // "occupancy_map_mode": "free_space_box",
+  // "occupancy_box_distribution": "gaussian",
+  // "occupancy_box_min": [-0.875, 0.0, -0.875],
+  // "occupancy_box_max": [0.875, 0.525, 1.75],
+  // "occupancy_box_grid_step": 0.175,
+  // "occupancy_gaussian_center": [0.0, 0.2625, 0.4375],
+  // "occupancy_gaussian_sigma_xyz": [0.315, 0.1225, 0.42],
+  // "show_occupancy_route": false,
+  // "show_occupancy_route_direction": false,
+
+  // ------------------------------
+  // Alternative mode: free_space_box + gaussian_mixture
+  // Uncomment this whole block and comment out the active block above.
+  "occupancy_map_mode": "free_space_box",
+  "occupancy_box_distribution": "gaussian_mixture",
+  "occupancy_map_file": "occupancy_free_space_gaussian_mixture_example.json",
+  "occupancy_box_min": [-5, 0, 0],
+  "occupancy_box_max": [5, 1, 2],
+  "occupancy_box_grid_step": 0.2,
+  "show_occupancy_route": false,
+  "show_occupancy_route_direction": false,
+
+  // Shared occupancy visualization settings.
+  // In free_space_box mode, occupancy_box_grid_step is the actual support discretization in meters.
+  "show_occupancy_map": true,
+  "show_static_geometry_in_occupancy": false,
+  "occupancy_vis_mode": "volume",
+  "occupancy_vis_clip_percentile": 90.0,
+  "occupancy_vis_point_size": 8.0,
+  "occupancy_vis_route_radius": 0.007,
+  "occupancy_vis_route_arrow_radius": 0.009,
+  "occupancy_vis_route_arrow_length": 0.09,
+  "occupancy_vis_volume_step": 0.07,
+  "occupancy_hotspot_fraction": 0.2,
+  "save_comparison_visualization": true,
+  "save_coverage_visualization": true,
+  "save_camera_responsibility_visualization": true,
+  "save_per_camera_responsibility_visualization": true,
+  "save_visual_summary": true,
+  "coverage_vis_point_size": 6.0,
+  "visual_summary_columns": 3,
+
+  // World-axis visualization settings. Tick spacing is interpreted in meters.
+  "show_world_axes": true,
+  "show_world_axis_tick_labels": false,
+  "world_axis_tick_step": 0.5,
+  // "world_axis_length": null,
+  // "world_axis_tick_size": null,
+  // "world_axis_radius": null,
+  // "world_axis_label_size": null,
+
+  // Per-epoch decay factor for the persistent pose optimizer.
+  "pose_lr_decay": 0.98,
+
+  // Soft depth gate temperature for the differentiable visibility surrogate.
+  "visibility_depth_temperature": 0.0875,
+
+  // Soft field-of-view gate temperature for the differentiable visibility surrogate.
+  "visibility_fov_temperature": 0.05,
+
+  // Soft surface-facing gate temperature for the differentiable visibility surrogate.
+  "visibility_normal_temperature": 0.1,
+
+  // Initial camera placement strategy.
+  // "grid" places the initial camera centers on an evenly spaced grid
+  // inside the selected placement volume.
+  // "random" samples the initial camera centers uniformly
+  // inside the selected placement volume.
+  "camera_init_strategy": "grid",
+  // "camera_init_strategy": "random",
+
+  // During the non-gradient reset stage, sample this many random camera centers
+  // inside the selected placement volume for each high-need voxel candidate,
+  // then orient them toward that voxel.
+  "reset_random_samples_per_voxel": 8,
+
+  // Enable a hard camera placement constraint during initialization/reset
+  // and a differentiable constrained parameterization during gradient refinement.
+  "camera_constraint_enable": true,
+
+  // Camera placement constraint shape.
+  // Volume constraints: "box", "cylinder", "dome"
+  // Surface constraints: "box_surface", "plane", "cylinder_surface", "dome_surface"
+
+  // box-in-the-front
+  // "camera_constraint_shape": "box",
+  // "camera_constraint_box_min": [-3.5, -2.8875, -0.525],
+  // "camera_constraint_box_max": [3.5, -1.19, 2.625],
+
+  // box
+  // "camera_constraint_shape": "box",
+  // "camera_constraint_box_min": [-3.5, -3.5, -0.525],
+  // "camera_constraint_box_max": [3.5, 3.5, 2.625],
+
+  // box surface
+  // Uses the same parameterization as "box", but restricts camera centers
+  // to the outer surface of the axis-aligned box.
+  // "camera_constraint_shape": "box_surface",
+  // "camera_constraint_box_min": [-3.5, -3.5, -0.525],
+  // "camera_constraint_box_max": [3.5, 3.5, 2.625],
+
+
+  // cylinder
+  // center_xy = [cx, cy]
+  // radius_xy = [rx, ry]
+  // z_range = [z_min, z_max]
+  // ((x-cx)/rx)^2 + ((y-cy)/ry)^2 <= 1
+
+  // "camera_constraint_shape": "cylinder",
+  // "camera_constraint_cylinder_center_xy": [0.0, 0.0],
+  // "camera_constraint_cylinder_radius_xy": [4.375, 2.625],
+  // "camera_constraint_cylinder_z_range": [-0.525, 2.625],
+
+  // cylinder surface
+  // Uses the same parameterization as "cylinder", but restricts camera centers
+  // to the lateral surface instead of the full volume.
+  // "camera_constraint_shape": "cylinder_surface",
+  // "camera_constraint_cylinder_center_xy": [0.0, 0.0],
+  // "camera_constraint_cylinder_radius_xy": [4.375, 2.625],
+  // "camera_constraint_cylinder_z_range": [-0.525, 2.625],
+
+  // dome
+  // base_center = [cx, cy, z_base]
+  // radius_xyz = [rx, ry, rz]
+  // ((x-cx)/rx)^2 + ((y-cy)/ry)^2 + ((z-z_base)/rz)^2 <= 1
+  
+  // "camera_constraint_shape": "dome",
+  // "camera_constraint_dome_base_center": [0.0, 0.0, -0.525],
+  // "camera_constraint_dome_radius_xyz": [4.375, 2.625, 2.625],
+
+  // dome surface
+  // Uses the same parameterization as "dome", but restricts camera centers
+  // to the upper half-ellipsoid surface instead of the full volume.
+  // "camera_constraint_shape": "dome_surface",
+  // "camera_constraint_dome_base_center": [0.0, 0.0, -0.525],
+  // "camera_constraint_dome_radius_xyz": [4.375, 2.625, 2.625],
+
+  // plane
+  // Points on the plane are parameterized as:
+  // center + alpha * span_u + beta * span_v, where alpha, beta are in [-1, 1].
+  // So span_u and span_v are half-extent vectors lying on the plane.
+  "camera_constraint_shape": "plane",
+  "camera_constraint_plane_center": [0.0, -3, 0.5],
+  "camera_constraint_plane_span_u": [3.0, 0.0, 0.0],
+  "camera_constraint_plane_span_v": [0.0, 0.0, 1.5],
+
+
+  // Remove the previous resultModel/<path> directory before starting a new run.
+  "clear_previous_results": true,
+
+  // Visualization mode: save images, open an interactive window, or disable visualization.
+  // "vismode": "save"
+  "vismode": "interactive"
+}

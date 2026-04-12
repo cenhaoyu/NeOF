@@ -47,11 +47,23 @@ For 3D scenes, download the [Replica dataset](https://github.com/facebookresearc
 
 ### For optimization: 
 For optimization the camera layer:
+```bash
+python main.py --path random/brother/ --preferred_distance 2.6 \
+--cameranum 10 --epoches 20 --iterations 20 \
+--isscene False --modelname data/3D_model/1Brother/visual_geometry.obj
 ```
-python main.py --path random/brother/ --height 0.8 --cameranum 10 \
---epoches 20 --iterations 20 \
---isscene False --modelname data/3D_model/1Brother/visual_geometry.obj 
+
+The legacy `--height` flag is still accepted for backward compatibility and maps to `--preferred_distance`.
+The current implementation uses direct world coordinates. With `model_physical_height` set in the config, the toy model is scaled to a human-sized target and saved poses / evaluation metrics are reported in meters.
+
+You can also put arguments into a JSON config file and keep the command line short:
 ```
+python main.py --config configs/main_brother.json
+python evaluate_triangulation.py --config configs/main_brother.json
+```
+
+The config parser accepts `//`, `#`, and `/* ... */` comments, so the example config files can document each parameter inline.  
+`evaluate_triangulation.py` reuses the main config and ignores optimization-only keys; evaluation-specific options can still be overridden on the command line.
 
 
 ## Demo Video

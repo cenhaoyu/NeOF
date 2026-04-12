@@ -6,6 +6,53 @@ intrinsic=np.array([[320.0,0,319.5],
                    [0,320.0,239.5], 
                    [0,0,1]])
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+CAMERA_INTRINSIC_CONFIG = {
+    "image_width": float(w),
+    "image_height": float(h),
+    "fx": float(intrinsic[0, 0]),
+    "fy": float(intrinsic[1, 1]),
+    "cx": float(intrinsic[0, 2]),
+    "cy": float(intrinsic[1, 2]),
+}
+
+
+def configure_camera_intrinsics(image_width, image_height, fx, fy, cx, cy):
+    image_width = float(image_width)
+    image_height = float(image_height)
+    fx = float(fx)
+    fy = float(fy)
+    cx = float(cx)
+    cy = float(cy)
+    if image_width <= 0 or image_height <= 0:
+        raise ValueError("image_width and image_height must be positive")
+    if fx <= 0 or fy <= 0:
+        raise ValueError("fx and fy must be positive")
+
+    global w, h
+    w = int(round(image_width))
+    h = int(round(image_height))
+    intrinsic[...] = np.array(
+        [
+            [fx, 0.0, cx],
+            [0.0, fy, cy],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=float,
+    )
+    CAMERA_INTRINSIC_CONFIG.update(
+        {
+            "image_width": image_width,
+            "image_height": image_height,
+            "fx": fx,
+            "fy": fy,
+            "cx": cx,
+            "cy": cy,
+        }
+    )
+
+
+def get_camera_intrinsics_metadata():
+    return dict(CAMERA_INTRINSIC_CONFIG)
 ###########calculate rotation matrix from parameter 6D
 # batch*n
 def normalize_vector( v, return_mag =False):

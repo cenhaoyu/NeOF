@@ -1,0 +1,16 @@
+{
+  // World-coordinate Gaussian mixture in meters for free_space_box occupancy.
+  "mode": "gaussian_mixture",
+  "components": [
+    {
+      "center": [-2, 0.5, 0.5],
+      "sigma_xyz": [0.5, 0.2, 0.5],
+      "weight": 1.0
+    },
+    {
+      "center": [2, 0.5, 1.5],
+      "sigma_xyz": [0.5, 0.2, 0.5],
+      "weight": 1.0
+    }
+  ]
+}
