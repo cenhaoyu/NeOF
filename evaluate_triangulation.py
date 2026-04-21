@@ -8,7 +8,12 @@ from camera_constraints import apply_camera_constraint_shape_to_path
 from config_utils import parse_args_with_json_config
 from dataset.occupancy_map import build_occupancy_support, occupancy_uses_free_space_support
 from dataset.pcd import getPointNormalfromPly
-from dataset.utils import configure_camera_intrinsics, intrinsic
+from dataset.utils import (
+    configure_camera_models_from_args,
+    get_camera_intrinsic,
+    get_camera_intrinsics_array,
+    get_camera_model,
+)
 from field.field_attribute import get_visiblep_opt, is_point_in_fov
 
 try:
@@ -60,12 +65,6 @@ def load_saved_geometry(path, target):
         "model_physical_height",
         "world_scale",
         "world_coordinate_system",
-        "image_width",
-        "image_height",
-        "fx",
-        "fy",
-        "cx",
-        "cy",
         "model_normalized_height",
         "physical_scale",
     ):
@@ -73,6 +72,10 @@ def load_saved_geometry(path, target):
             continue
         value = geometry[key]
         metadata[key] = value.item() if np.ndim(value) == 0 else value.tolist()
+    if "camera_models_json" in geometry:
+        camera_models_json = geometry["camera_models_json"]
+        camera_models_json = camera_models_json.item() if np.ndim(camera_models_json) == 0 else str(camera_models_json[0])
+        metadata["camera_models"] = json.loads(camera_models_json)
     del target
     return (
         voxelnormals.copy(),
@@ -128,13 +131,9 @@ def load_target_geometry(args):
         "model_physical_height": float(geometry_info["model_world_height"]),
         "world_scale": float(geometry_info["world_scale_from_source"]),
         "world_coordinate_system": True,
-        "image_width": args.image_width,
-        "image_height": args.image_height,
-        "fx": args.fx,
-        "fy": args.fy,
-        "cx": args.cx,
-        "cy": args.cy,
     }
+    if getattr(args, "camera_models", None) is not None:
+        metadata["camera_models"] = args.camera_models
     return (
         voxelnormals.copy(),
         float(scale[0]),
@@ -157,10 +156,10 @@ def to_evaluation_positions(position, scale, center, geometry_metadata):
     return normalize_positions(position, scale, center)
 
 
-def build_projection_matrices(position, rotation):
+def build_projection_matrices(position, rotation, camera_intrinsics):
     t = -np.matmul(rotation, position[..., None]).squeeze(-1)
     extrinsic = np.concatenate((rotation, t[..., None]), axis=-1)
-    projection = np.matmul(intrinsic[None, ...], extrinsic)
+    projection = np.matmul(camera_intrinsics, extrinsic)
     return projection
 
 
@@ -176,11 +175,14 @@ def apply_pixel_measurement_model(pixels, args, rng):
 def collect_observations(voxelnormals, position, rotation, args, rng):
     observations = [[] for _ in range(len(voxelnormals))]
     for camera_idx in range(len(position)):
+        camera_model = get_camera_model(camera_idx)
+        camera_intrinsic = get_camera_intrinsic(camera_idx)
         if occupancy_uses_free_space_support(args):
             point_idx = is_point_in_fov(
                 voxelnormals[:, :3],
                 rotation[camera_idx],
                 position[camera_idx],
+                camera_model=camera_model,
             )
             if len(point_idx) == 0:
                 continue
@@ -191,10 +193,11 @@ def collect_observations(voxelnormals, position, rotation, args, rng):
                 position[camera_idx],
                 rotation[camera_idx],
                 args.radius,
+                camera_model=camera_model,
             )
         if len(point_idx) == 0:
             continue
-        pixels = np.dot(intrinsic, point_cam.T).T
+        pixels = np.dot(camera_intrinsic, point_cam.T).T
         pixels = pixels[:, :2] / pixels[:, 2:3]
         pixels = apply_pixel_measurement_model(pixels, args, rng)
         for idx, pixel in zip(point_idx.astype(int), pixels):
@@ -411,7 +414,7 @@ def build_hotspot_mask(weights, hotspot_fraction):
 
 
 def evaluate_trial(voxelnormals, occupancy_weights, hotspot_mask, position, rotation, args, rng):
-    projection = build_projection_matrices(position, rotation)
+    projection = build_projection_matrices(position, rotation, get_camera_intrinsics_array())
     observations = collect_observations(voxelnormals, position, rotation, args, rng)
     occupancy_weights = np.asarray(occupancy_weights, dtype=float)
 
@@ -924,8 +927,7 @@ def main():
         default=None,
     )
     parser.add_argument("--modelname", type=str, required=True)
-    parser.add_argument("--preferred_distance", type=float, default=None)
-    parser.add_argument("--height", type=float, default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--camera_models", type=json.loads, default=None)
     parser.add_argument("--image_width", type=int, default=640)
     parser.add_argument("--image_height", type=int, default=480)
     parser.add_argument("--fx", type=float, default=320.0)
@@ -986,6 +988,7 @@ def main():
     args = parse_args_with_json_config(parser, allow_unknown_config_keys=True)
     if args.camera_constraint_shape is not None:
         args.path = apply_camera_constraint_shape_to_path(args.path, args.camera_constraint_shape)
+    args = configure_camera_models_from_args(args)
 
     if args.trials < 1:
         raise ValueError("--trials must be at least 1")
@@ -998,10 +1001,6 @@ def main():
         raise ValueError("--occupancy_gaussian_sigma_xyz must be positive on every axis")
     if args.occupancy_hotspot_fraction <= 0 or args.occupancy_hotspot_fraction > 1:
         raise ValueError("--occupancy_hotspot_fraction must be in (0, 1]")
-    if args.image_width <= 0 or args.image_height <= 0:
-        raise ValueError("--image_width and --image_height must be positive")
-    if args.fx <= 0 or args.fy <= 0:
-        raise ValueError("--fx and --fy must be positive")
     if args.model_physical_height is not None and args.model_physical_height <= 0:
         raise ValueError("--model_physical_height must be positive when provided")
     if args.refine and least_squares is None:
@@ -1020,6 +1019,9 @@ def main():
     if not os.path.exists(optimized_pose_path):
         raise FileNotFoundError(f"Optimized pose file not found: {optimized_pose_path}")
 
+    initial_position, initial_rotation = load_pose(initial_pose_path)
+    optimized_position, optimized_rotation = load_pose(optimized_pose_path)
+
     (
         voxelnormals,
         scale,
@@ -1034,23 +1036,25 @@ def main():
         args.occupancy_map_mode = occupancy_mode
     if occupancy_distribution_mode is not None:
         args.occupancy_box_distribution = occupancy_distribution_mode
-    for key in ("image_width", "image_height", "fx", "fy", "cx", "cy"):
-        if key in geometry_metadata:
-            setattr(args, key, geometry_metadata[key])
+    if "camera_models" not in geometry_metadata:
+        raise ValueError(
+            f"{args.geometry_file} is missing camera_models_json. "
+            "Please regenerate geometry_data.npz with the current heterogeneous-camera branch."
+        )
+    args.camera_models = geometry_metadata["camera_models"]
+    args.cameranum = len(args.camera_models)
     if "model_physical_height" in geometry_metadata:
         args.model_physical_height = float(geometry_metadata["model_physical_height"])
+    args = configure_camera_models_from_args(args)
+    if len(initial_position) != args.cameranum or len(optimized_position) != args.cameranum:
+        raise ValueError(
+            "Pose file camera count does not match geometry_data.npz camera_models_json. "
+            f"initial={len(initial_position)}, optimized={len(optimized_position)}, rig={args.cameranum}"
+        )
     args.error_scale = (
         1.0
         if bool(geometry_metadata.get("world_coordinate_system", False))
         else float(geometry_metadata.get("physical_scale", 1.0))
-    )
-    configure_camera_intrinsics(
-        args.image_width,
-        args.image_height,
-        args.fx,
-        args.fy,
-        args.cx,
-        args.cy,
     )
     if occupancy_weights is None:
         occupancy_weights = uniform_weights(len(voxelnormals))
@@ -1059,8 +1063,6 @@ def main():
         len(occupancy_weights) > 0 and not np.allclose(occupancy_weights, occupancy_weights[0])
     )
     hotspot_mask = build_hotspot_mask(occupancy_weights, args.occupancy_hotspot_fraction) if args.occupancy_eval_active else None
-    initial_position, initial_rotation = load_pose(initial_pose_path)
-    optimized_position, optimized_rotation = load_pose(optimized_pose_path)
     initial_position = to_evaluation_positions(initial_position, scale, center, geometry_metadata)
     optimized_position = to_evaluation_positions(optimized_position, scale, center, geometry_metadata)
 
@@ -1087,10 +1089,13 @@ def main():
     print(f"Initial pose file: {initial_pose_path}")
     print(f"Optimized pose file: {optimized_pose_path}")
     print(f"3D error unit: {args.length_unit}")
-    print(
-        f"Camera model: {args.image_width}x{args.image_height}, "
-        f"fx={args.fx:.1f}, fy={args.fy:.1f}"
-    )
+    print(f"Camera rig loaded for evaluation: {len(args.camera_models)} cameras")
+    for idx, camera_model in enumerate(args.camera_models):
+        print(
+            f"  Cam {idx:02d} | {camera_model['name']} | "
+            f"image={int(round(camera_model['image_width']))}x{int(round(camera_model['image_height']))} | "
+            f"fx={camera_model['fx']:.1f}, fy={camera_model['fy']:.1f}"
+        )
     if "model_physical_height" in geometry_metadata:
         print(f"World-scale target height: {float(geometry_metadata['model_physical_height']):.3f} m")
     print(

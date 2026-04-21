@@ -12,7 +12,8 @@
 
   // All geometry, camera poses and occupancy definitions below use world coordinates in meters.
 
-  // Camera intrinsics used by both optimization and evaluation.
+  // Legacy / fallback camera intrinsics used when camera_models is omitted.
+  // When camera_models is provided below, per-camera values override these defaults.
   "image_width": 1920,
   "image_height": 1080,
   "fx": 1400.0,
@@ -20,11 +21,44 @@
   "cx": 959.5,
   "cy": 539.5,
 
+  // Heterogeneous camera. cameranum must match this list length.
+  "camera_models": [
+    {
+      "name": "cam_00_wide",
+      "image_width": 2560,
+      "image_height": 1440,
+      "fov_x_deg": 96.0,
+      "fov_y_deg": 62.0,
+      "min_projected_voxel_px": 1.5
+    },
+    {
+      "name": "cam_01_narrow",
+      "image_width": 3840,
+      "image_height": 2160,
+      "fov_x_deg": 58.0,
+      "fov_y_deg": 36.0,
+      "min_projected_voxel_px": 2.0
+    },
+    {
+      "name": "cam_02_wide",
+      "image_width": 2560,
+      "image_height": 1440,
+      "fov_x_deg": 96.0,
+      "fov_y_deg": 62.0,
+      "min_projected_voxel_px": 1.5
+    },
+    {
+      "name": "cam_03_narrow",
+      "image_width": 3840,
+      "image_height": 2160,
+      "fov_x_deg": 58.0,
+      "fov_y_deg": 36.0,
+      "min_projected_voxel_px": 2.0
+    }
+  ],
+
   // Map the toy model to a human-sized target in world coordinates.
   "model_physical_height": 1.75,
-
-  // Preferred camera-to-surface distance used for reset proposals.
-  "preferred_distance": 2.625,
 
   // Number of cameras to optimize jointly.
   "cameranum": 4,
@@ -54,6 +88,9 @@
   // Weight of the camera-object angle quality term Lco.
   "wco": 0.2,
 
+  // Weight of the voxel sampling-quality deficit term Lres.
+  "wres": 0.2,
+
   // Input mesh or point-cloud model to optimize camera placement for.
   "modelname": "data/3D_model/1Brother/visual_geometry.obj",
 
@@ -62,6 +99,12 @@
 
   // Voxel size for surface/support voxelization, in meters.
   "voxelsize": 0.02,
+
+  // Sampling-quality deficit uses the projected size of one voxel in pixels.
+  // topk=2 emphasizes multi-view reconstruction quality.
+  "sampling_quality_temperature": 0.5,
+  "sampling_quality_topk": 2,
+  "sampling_quality_min_projected_voxel_px": 1.5,
 
   // Hidden feature dimension of the attention-based neural observation field.
   "field_hidden_dim": 32,
@@ -187,6 +230,16 @@
   // "world_axis_tick_size": null,
   // "world_axis_radius": null,
   // "world_axis_label_size": null,
+
+  // Camera visualization settings for initial_scene / optimized_scene and derived exports.
+  // A small local frustum is always drawn near the camera center.
+  // When show_camera_fov=true, an additional long FoV wireframe is extended across the scene.
+  "camera_vis_scale": 0.2,
+  "show_camera_optical_axis": true,
+  "show_camera_fov": true,
+  // Leave null to auto-expand the optical axis and FoV rays to the scene scale.
+  // "camera_optical_axis_length": null,
+  // "camera_line_radius": null,
 
   // Per-epoch decay factor for the persistent pose optimizer.
   "pose_lr_decay": 0.98,

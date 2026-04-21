@@ -2,7 +2,6 @@ import copy
 import time
 
 from camera_constraints import (
-    constrained_camera_center_on_ray,
     point_in_camera_constraint,
     sample_camera_points_in_constraint,
 )
@@ -55,16 +54,16 @@ class CameraLayerOpt:
             normal_voxel_num=args.field_normal_voxel_num,
         ).to(device)
 
-        weights = np.array([args.wvis, args.wcc, args.wco], dtype=np.float32)
+        weights = np.array([args.wvis, args.wcc, args.wco, args.wres], dtype=np.float32)
         if self.free_space_support:
             weights[2] = 0.0
         weights_sum = float(np.sum(weights))
         if weights_sum <= 1e-8:
-            weights = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+            weights = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
         else:
             weights = weights / weights_sum
         self.loss_weights_np = weights
-        self.attribute_upperbound_np = np.array([args.kcoverage, np.pi / 2, 1.0], dtype=np.float32)
+        self.attribute_upperbound_np = np.array([args.kcoverage, np.pi / 2, 1.0, 1.0], dtype=np.float32)
 
     def loss_weights(self):
         return npToTensor(self.loss_weights_np)
@@ -144,17 +143,6 @@ class CameraLayerOpt:
             self.args.camera_constraint_min,
             self.args.camera_constraint_max,
             constraint_data=self.args.camera_constraint_data,
-        )
-
-    def candidate_center_from_surface(self, surface_point, outward_direction, preferred_distance=None):
-        distance = self.args.preferred_distance if preferred_distance is None else preferred_distance
-        return constrained_camera_center_on_ray(
-            surface_point,
-            outward_direction,
-            distance,
-            self.args.camera_constraint_min,
-            self.args.camera_constraint_max,
-            shape=self.args.camera_constraint_shape,
         )
 
     def sample_random_candidate_poses(self, target_point):
@@ -271,42 +259,10 @@ class CameraLayerOpt:
 
         candidate_priority = self.candidate_priority(predicted)
         candidate_indices = np.argsort(candidate_priority)[::-1][:sample]
-        center = np.mean(self.voxelnormals[:,:3],axis=0)
 
         for candidate_idx in candidate_indices:
             surface_point = self.voxelnormals[candidate_idx, :3]
-            candidate_poses = []
-            if self.args.camera_constraint_enable:
-                candidate_poses = self.sample_random_candidate_poses(surface_point)
-            else:
-                outward_directions = []
-                normal_direction = self.voxelnormals[candidate_idx, 3:]
-                if np.linalg.norm(normal_direction) > 1e-8 and not self.free_space_support:
-                    outward_directions.append(normal_direction)
-                center_direction = surface_point - center
-                center_norm = np.linalg.norm(center_direction)
-                if scene_mode:
-                    if np.linalg.norm(normal_direction) > 1e-8 and not self.free_space_support:
-                        outward_directions.append(-normal_direction)
-                    if center_norm > 1e-8:
-                        outward_directions.append(center_direction / center_norm)
-                elif center_norm > 1e-8 and len(outward_directions) == 0:
-                    outward_directions.append(center_direction / center_norm)
-
-                for outward_direction in outward_directions:
-                    candidate_center = self.candidate_center_from_surface(surface_point, outward_direction)
-                    if candidate_center is None:
-                        continue
-                    candidate_poses.append((candidate_center, getLookAtRotation(candidate_center, surface_point)))
-                    if scene_mode:
-                        half_distance_center = self.candidate_center_from_surface(
-                            surface_point,
-                            outward_direction,
-                            preferred_distance=0.5 * self.args.preferred_distance,
-                        )
-                        if half_distance_center is not None:
-                            candidate_poses.append((half_distance_center, getLookAtRotation(half_distance_center, surface_point)))
-
+            candidate_poses = self.sample_random_candidate_poses(surface_point)
             if len(candidate_poses) == 0:
                 continue
 
@@ -450,6 +406,8 @@ class CameraLayerOpt:
                     depth_temperature=self.args.visibility_depth_temperature,
                     fov_temperature=self.args.visibility_fov_temperature,
                     normal_temperature=self.args.visibility_normal_temperature,
+                    quality_temperature=self.args.sampling_quality_temperature,
+                    voxel_size=self.args.voxelsize,
                 )
                 raw_loss_components = torch.mean(attribute / self.voxel_occupancy_sum_np,dim=0)
                 loss_components = raw_loss_components / self.attribute_upperbound()
@@ -497,9 +455,11 @@ class CameraLayerOpt:
                 self.log_writer.add_scalar("loss/raw_vis",raw_loss_components[0],global_step)
                 self.log_writer.add_scalar("loss/raw_cc",raw_loss_components[1],global_step)
                 self.log_writer.add_scalar("loss/raw_co",raw_loss_components[2],global_step)
+                self.log_writer.add_scalar("loss/raw_res",raw_loss_components[3],global_step)
                 self.log_writer.add_scalar("loss/norm_vis",loss_components[0],global_step)
                 self.log_writer.add_scalar("loss/norm_cc",loss_components[1],global_step)
                 self.log_writer.add_scalar("loss/norm_co",loss_components[2],global_step)
+                self.log_writer.add_scalar("loss/norm_res",loss_components[3],global_step)
                 self.log_writer.add_scalar("metric/joint_need_score",joint_score,global_step)
                 self.log_writer.add_scalar("metric/voxel_uncoverage_rate",rate_v,global_step)
                 self.log_writer.add_scalar("metric/voxel_coverage_num",num_v,global_step)
@@ -516,6 +476,7 @@ class CameraLayerOpt:
                 voxel_gap_label = "weighted voxel deficit" if self.args.occupancy_map_enable else "voxel K-coverage deficit"
                 joint_gap_label = "weighted joint gap" if self.args.occupancy_map_enable else "joint observation gap"
                 co_label = "camera-object angle deficit (disabled)" if self.free_space_support else "camera-object angle deficit"
+                quality_label = "sampling-quality deficit"
                 print(
                     f"  Pose step {iters+1:02d}/{self.args.iterations:02d} | "
                     f"global step {global_step:03d}{status_text}\n"
@@ -524,6 +485,7 @@ class CameraLayerOpt:
                     f"      visibility deficit          = {loss_components[0]:.4f}\n"
                     f"      camera-camera angle deficit = {loss_components[1]:.4f}\n"
                     f"      {co_label:<28} = {loss_components[2]:.4f}\n"
+                    f"      {quality_label:<28} = {loss_components[3]:.4f}\n"
                     f"    Exact voxel-model evaluation:\n"
                     f"      {voxel_gap_label:<28} = {rate_v:.4f}\n"
                     f"      {joint_gap_label:<28} = {joint_score:.4f}\n"

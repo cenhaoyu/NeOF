@@ -6,6 +6,7 @@ import open3d as o3d
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 from camera_constraints import camera_volume_center, camera_volume_height, camera_volume_xy_radii
+from dataset.utils import get_camera_models_metadata
 from dataset.init_camera import *
 import matplotlib.pyplot as plt
 
@@ -126,19 +127,101 @@ class LineMesh(object):
             vis.remove_geometry(cylinder)
 
 
-def getCameraVis(camera_before,color,connection,R,C):
-    T=np.dot(-R,C)
-    R=R.T
-    T=np.dot(-R,T)
-    camera_rotate=np.dot(R,camera_before)
-    camera_after=camera_rotate+T
-    camera_points=camera_after.T
-    tracking_mesh=LineMesh(camera_points,connection.astype(np.int32),color,radius=0.001)
-    line_mesh_geo = tracking_mesh.cylinder_segments
-    return line_mesh_geo
+def _build_line_geometries(points, connection, color, radius):
+    tracking_mesh = LineMesh(
+        np.asarray(points, dtype=float),
+        np.asarray(connection, dtype=np.int32),
+        np.asarray(color, dtype=float).reshape(1, 3),
+        radius=float(radius),
+    )
+    return tracking_mesh.cylinder_segments
 
 
-def build_camera_geometries(camerapose, camerarotation, color=None, camera_scale=0.2):
+def _camera_local_to_world(local_points, rotation, position):
+    return (rotation.T @ local_points.T).T + position.reshape(1, 3)
+
+
+def _resolve_camera_models_for_visualization(camera_models, camera_count):
+    if camera_models is None:
+        camera_models = get_camera_models_metadata()
+        if len(camera_models) == camera_count:
+            return camera_models
+        if camera_count == 1 and len(camera_models) > 0:
+            return [camera_models[0]]
+        raise ValueError(
+            f"camera model count mismatch for visualization: have {len(camera_models)} models but {camera_count} poses"
+        )
+
+    if not isinstance(camera_models, list) or len(camera_models) == 0:
+        raise ValueError("camera_models must be a non-empty list when provided")
+    if len(camera_models) == 1 and camera_count > 1:
+        return [dict(camera_models[0]) for _ in range(camera_count)]
+    if len(camera_models) != camera_count:
+        raise ValueError(
+            f"camera model count mismatch for visualization: have {len(camera_models)} models but {camera_count} poses"
+        )
+    return camera_models
+
+
+def _camera_frustum_points_at_depth(camera_model, frustum_depth):
+    frustum_depth = max(float(frustum_depth), 1e-6)
+    width = float(camera_model["image_width"])
+    height = float(camera_model["image_height"])
+    fx = float(camera_model["fx"])
+    fy = float(camera_model["fy"])
+    cx = float(camera_model["cx"])
+    cy = float(camera_model["cy"])
+
+    left = -cx / fx * frustum_depth
+    right = (width - 1.0 - cx) / fx * frustum_depth
+    top = -cy / fy * frustum_depth
+    bottom = (height - 1.0 - cy) / fy * frustum_depth
+
+    return np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [left, top, frustum_depth],
+            [right, top, frustum_depth],
+            [right, bottom, frustum_depth],
+            [left, bottom, frustum_depth],
+        ],
+        dtype=float,
+    )
+
+
+def _camera_frustum_local_points(camera_model, camera_scale):
+    return _camera_frustum_points_at_depth(camera_model, float(camera_scale) * 0.2)
+
+
+def resolve_camera_ray_length(mesh, camerapose, constraint_min=None, constraint_max=None, ray_length=None):
+    if ray_length is not None:
+        ray_length = float(ray_length)
+        if not np.isfinite(ray_length) or ray_length <= 0:
+            raise ValueError("camera ray length must be finite and positive when provided")
+        return ray_length
+
+    axis_length = resolve_world_axis_length(
+        mesh,
+        camerapose,
+        constraint_min=constraint_min,
+        constraint_max=constraint_max,
+        axis_length=None,
+    )
+    return max(1.0, 2.2 * float(axis_length))
+
+
+def build_camera_geometries(
+    camerapose,
+    camerarotation,
+    color=None,
+    camera_scale=0.2,
+    camera_models=None,
+    show_optical_axis=True,
+    optical_axis_length=None,
+    show_fov=False,
+    line_radius=None,
+    optical_axis_color=None,
+):
     camerapose = np.asarray(camerapose, dtype=float)
     camerarotation = np.asarray(camerarotation, dtype=float)
     if color is None:
@@ -151,31 +234,65 @@ def build_camera_geometries(camerapose, camerarotation, color=None, camera_scale
             raise ValueError("color must have shape (3,) or (N, 3)")
         if color.shape[0] not in (1, len(camerapose)):
             raise ValueError("camera color count must be 1 or match the number of cameras")
-    camera_before = np.array(
-        [
-            [0, 0.2, -0.2, -0.2, 0.2],
-            [0, 0.1, 0.1, -0.1, -0.1],
-            [0, 0.2, 0.2, 0.2, 0.2],
-        ],
-        dtype=float,
-    )
-    camera_before = camera_before * camera_scale
-    point_connection = np.array(
-        [[0, 1], [0, 2], [0, 3], [0, 4], [1, 2], [2, 3], [3, 4], [1, 4]],
-        dtype=np.int32,
+    if camerapose.ndim != 2 or camerapose.shape[1] != 3:
+        raise ValueError("camerapose must have shape (N, 3)")
+    if camerarotation.ndim != 3 or camerarotation.shape[1:] != (3, 3):
+        raise ValueError("camerarotation must have shape (N, 3, 3)")
+    if len(camerapose) != len(camerarotation):
+        raise ValueError("camerapose and camerarotation must contain the same number of cameras")
+
+    camera_models = _resolve_camera_models_for_visualization(camera_models, len(camerapose))
+    point_connection = np.array([[0, 1], [0, 2], [0, 3], [0, 4], [1, 2], [2, 3], [3, 4], [4, 1]], dtype=np.int32)
+    axis_connection = np.array([[0, 1]], dtype=np.int32)
+    line_radius = max(float(camera_scale) * 0.005, 0.001) if line_radius is None else float(line_radius)
+    if line_radius <= 0:
+        raise ValueError("line_radius must be positive")
+    optical_axis_color = (
+        np.array([1.0, 0.86, 0.15], dtype=float)
+        if optical_axis_color is None
+        else np.asarray(optical_axis_color, dtype=float)
     )
 
     geometries = []
     for idx in range(len(camerapose)):
         current_color = color[0] if color.shape[0] == 1 else color[idx]
-        geometry_list = getCameraVis(
-            camera_before,
-            np.asarray(current_color, dtype=float).reshape(1, 3),
-            point_connection,
-            camerarotation[idx],
-            camerapose[idx].reshape(3, 1),
+        camera_model = camera_models[idx]
+        local_frustum = _camera_frustum_local_points(camera_model, camera_scale)
+        world_frustum = _camera_local_to_world(local_frustum, camerarotation[idx], camerapose[idx])
+        geometries.extend(
+            _build_line_geometries(
+                world_frustum,
+                point_connection,
+                current_color,
+                radius=line_radius,
+            )
         )
-        geometries.extend(geometry_list)
+
+        if show_fov and optical_axis_length is not None and optical_axis_length > local_frustum[1, 2] * 1.05:
+            local_fov = _camera_frustum_points_at_depth(camera_model, optical_axis_length)
+            world_fov = _camera_local_to_world(local_fov, camerarotation[idx], camerapose[idx])
+            geometries.extend(
+                _build_line_geometries(
+                    world_fov,
+                    point_connection,
+                    current_color,
+                    radius=max(0.9 * line_radius, 1e-6),
+                )
+            )
+
+        if show_optical_axis:
+            frustum_depth = local_frustum[1, 2]
+            axis_length = float(optical_axis_length) if optical_axis_length is not None else frustum_depth * 2.5
+            local_axis = np.array([[0.0, 0.0, 0.0], [0.0, 0.0, axis_length]], dtype=float)
+            world_axis = _camera_local_to_world(local_axis, camerarotation[idx], camerapose[idx])
+            geometries.extend(
+                _build_line_geometries(
+                    world_axis,
+                    axis_connection,
+                    optical_axis_color,
+                    radius=line_radius,
+                )
+            )
     return geometries
 
 
@@ -1227,6 +1344,12 @@ def visMesh(
     occupancy_vis_route_arrow_length=0.05,
     scene_export_prefix=None,
     show_base_geometry=True,
+    camera_models=None,
+    camera_vis_scale=0.2,
+    show_camera_optical_axis=True,
+    show_camera_fov=True,
+    camera_optical_axis_length=None,
+    camera_line_radius=None,
 ):
     vis = o3d.visualization.Visualizer()
     visible = bool(flag)
@@ -1235,29 +1358,23 @@ def visMesh(
     render_option.point_size = float(occupancy_vis_point_size)
 
     ##############control view ############
-
-    camera_before=np.array([[0,0.2,-0.2,-0.2,0.2],
-                            [0,0.1,0.1,-0.1,-0.1],
-                            [0,0.2,0.2,0.2,0.2]])
-    camera_before=camera_before*0.2
-    camera_color=np.array( [[165/255 ,42/255 ,42/255],
-                                [1,0,0],
-                                [0,0,0],
-                                [0,0,1],
-                                [0,0,0]])
-    point_connection=np.array([[0,1],
-                                    [0,2],
-                                    [0,3],
-                                    [0,4],
-                                    [1,2],
-                                    [2,3],
-                                    [3,4],
-                                    [1,4]])
-
-    camera_geometries = []
-    for j in range(len(camerapose)):
-            line_mesh_geo=getCameraVis(camera_before,camera_color,point_connection,camerarotation[j],camerapose[j].reshape(3,1))
-            camera_geometries.extend(line_mesh_geo)
+    resolved_camera_ray_length = resolve_camera_ray_length(
+        mesh,
+        camerapose,
+        constraint_min=camera_constraint_min,
+        constraint_max=camera_constraint_max,
+        ray_length=camera_optical_axis_length,
+    )
+    camera_geometries = build_camera_geometries(
+        camerapose,
+        camerarotation,
+        camera_models=camera_models,
+        camera_scale=camera_vis_scale,
+        show_optical_axis=show_camera_optical_axis,
+        optical_axis_length=resolved_camera_ray_length,
+        show_fov=show_camera_fov,
+        line_radius=camera_line_radius,
+    )
     for geometry in camera_geometries:
         vis.add_geometry(geometry)
     constraint_geometries = []
@@ -1369,31 +1486,8 @@ def visualization(pointnormals,camerapose,camerarotation,extrinsic=None,coverage
     colors=plt.get_cmap("plasma")(1-(np.minimum(label,coverage_num)/(label if label > 0 else 1)))
     point_cloud.colors=o3d.utility.Vector3dVector(colors[:,:3])
     # o3d.io.write_point_cloud(imagep,point_cloud)
-    camera_before=np.array([[0,0.2,-0.2,-0.2,0.2],
-                            [0,0.1,0.1,-0.1,-0.1],
-                            [0,0.2,0.2,0.2,0.2]])
-    camera_before=camera_before*0.2
-    camera_color=np.array( [[0,0,0],
-                                [0,0,1],
-                                [0,0,1],
-                                [0,0,1],
-                                [165/255 ,42/255 ,42/255]])
-    point_connection=np.array([[0,1],
-                                    [0,2],
-                                    [0,3],
-                                    [0,4],
-                                    [1,2],
-                                    [2,3],
-                                    [3,4],
-                                    [1,4]])
-
-    line_mesh_all=[]
-    for j in range(len(camerapose)):
-            line_mesh_geo=getCameraVis(camera_before,camera_color,point_connection,camerarotation[j],camerapose[j].reshape(3,1))
-            line_mesh_all.append(line_mesh_geo)
-    for i in range(len(line_mesh_all)):
-        for j in range(0,len(line_mesh_all[0])):
-            vis.add_geometry(line_mesh_all[i][j])
+    for geometry in build_camera_geometries(camerapose, camerarotation):
+        vis.add_geometry(geometry)
     
     vis.add_geometry(point_cloud)
     if len(camerapose)==1 and extrinsic is not None:
@@ -1431,35 +1525,14 @@ def visaddline(pointnormals,camerapose,camerarotation,coverage_num,index,imagepa
     point_cloud.points=o3d.utility.Vector3dVector(points_array)
     point_cloud.normals=o3d.utility.Vector3dVector(normal_array)
     point_cloud.colors=o3d.utility.Vector3dVector(color_array)
-    camera_before=np.array([[0,0.2,-0.2,-0.2,0.2],
-                            [0,0.1,0.1,-0.1,-0.1],
-                            [0,0.2,0.2,0.2,0.2]])
-    camera_before=camera_before*0.1
-    camera_color1=np.array( [[0,0,1],
-                                [0,0,1],
-                                [0,0,1],
-                                [0,0,1],
-                                [0,0,1]])
+    camera_color1=np.array([[0,0,1]])
     camera_color2=np.array( [[0,0,0],
                                 [0,0,0],
                                 [0,0,0],
                                 [0,0,0],
                                 [0,0,0]])
-    point_connection=np.array([[0,1],
-                                    [0,2],
-                                    [0,3],
-                                    [0,4],
-                                    [1,2],
-                                    [2,3],
-                                    [3,4],
-                                    [1,4]])
-    line_mesh_all=[]
-    for j in range(len(camerapose)):
-            line_mesh_geo=getCameraVis(camera_before,camera_color1,point_connection,camerarotation[j],camerapose[j].reshape(3,1))
-            line_mesh_all.append(line_mesh_geo)
-    for i in range(len(line_mesh_all)):
-        for j in range(0,len(line_mesh_all[0])):
-            vis.add_geometry(line_mesh_all[i][j])
+    for geometry in build_camera_geometries(camerapose, camerarotation, color=camera_color1, camera_scale=0.1):
+        vis.add_geometry(geometry)
     point,connection=generateline(index,pointnormals[:,:3],camerapose)
     connect_lineset=o3d.geometry.LineSet(points=o3d.utility.Vector3dVector(point),lines=o3d.utility.Vector2iVector(connection))
     connect_lineset.colors = o3d.utility.Vector3dVector(camera_color2)

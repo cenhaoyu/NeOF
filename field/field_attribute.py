@@ -10,62 +10,75 @@ def get_fov_from_intrinsic_matrix(K):
     return fov_x, fov_y
 
 
-def filter_camera_space_points(point_c):
-    z = point_c[:, 2]
-    judge_h = np.where(z > 1e-8)[0]
-    if len(judge_h) == 0:
-        return judge_h
-
-    tan_aov_x = intrinsic[0,2]/intrinsic[0,0]
-    tan_aov_y = intrinsic[1,2]/intrinsic[1,1]
-    x = point_c[judge_h,0] / point_c[judge_h,2]
-    y = point_c[judge_h,1] / point_c[judge_h,2]
-    judge = (x  >= -tan_aov_x) * (x <= tan_aov_x) * (y >= -tan_aov_y) * (y <= tan_aov_y)
-
-    judge_aov=np.where(judge)[0]
-    return judge_h[judge_aov]
+def filter_camera_space_points(point_c, camera_model=None, return_projection=False):
+    if camera_model is None:
+        camera_model = get_camera_model(0)
+    valid_indices, pixels, depths = project_camera_space_points(point_c, camera_model)
+    if return_projection:
+        return valid_indices, pixels, depths
+    return valid_indices
 
 
-def is_point_in_fov(point, rotation, position):
-    #get aov
-    # aov_x,aov_y=get_fov_from_intrinsic_matrix(intrinsic)
-    # 将点从世界坐标系转换到相机坐标系
+def is_point_in_fov(point, rotation, position, camera_model=None):
     point_c=np.dot(rotation,(point-position).T).T
-    return filter_camera_space_points(point_c)
+    return filter_camera_space_points(point_c, camera_model=camera_model)
 
 
-def get_visible_points(pointnormals,position,rotation,radius=300):
+def get_visible_points(pointnormals,position,rotation,radius=300,camera_model=None,return_point_cam=False):
     point_cloud=o3d.geometry.PointCloud()
     point_cloud.points=o3d.utility.Vector3dVector(pointnormals[:,:3])
     point_cloud.normals=o3d.utility.Vector3dVector(pointnormals[:,3:])
-    # point_cloud.colors = o3d.utility.Vector3dVector(np.random.uniform(0, 1,size=(len(pointnormals), 3)))
     _, pt_map = point_cloud.hidden_point_removal(position, radius)
-    #correspond
     point=pointnormals[pt_map,:3]
-    judge=is_point_in_fov(point,rotation,position)
-    return np.array(pt_map)[judge],pointnormals[np.array(pt_map)[judge],:3]
+    point_c=np.dot(rotation,(point-position).T).T
+    judge=filter_camera_space_points(point_c, camera_model=camera_model)
+    visible_indices = np.array(pt_map)[judge]
+    visible_points = pointnormals[visible_indices,:3]
+    if return_point_cam:
+        return visible_indices, visible_points, point_c[judge]
+    return visible_indices, visible_points
 
 
-def get_visible_points_free_space(pointnormals, position, rotation):
-    judge = is_point_in_fov(pointnormals[:, :3], rotation, position)
-    return judge, pointnormals[judge, :3]
+def get_visible_points_free_space(pointnormals, position, rotation, camera_model=None, return_point_cam=False):
+    point_c = np.dot(rotation, (pointnormals[:, :3] - position).T).T
+    judge = filter_camera_space_points(point_c, camera_model=camera_model)
+    visible_points = pointnormals[judge, :3]
+    if return_point_cam:
+        return judge, visible_points, point_c[judge]
+    return judge, visible_points
 
 
-def get_visiblep_opt(pointnormals,position,rotation,radius):
+def get_visiblep_opt(pointnormals,position,rotation,radius,camera_model=None):
     points=np.dot(rotation,(pointnormals[:,:3]-position).T).T
     point_cloud=o3d.geometry.PointCloud()
     point_cloud.points=o3d.utility.Vector3dVector(points)
     point_cloud.normals=o3d.utility.Vector3dVector(pointnormals[:,3:])
-    # point_cloud.colors = o3d.utility.Vector3dVector(np.random.uniform(0, 1,size=(len(pointnormals), 3)))
     _, pt_map = point_cloud.hidden_point_removal(np.ones(shape=[3])*1e-5, radius)
-    # pcd_down=pcd.voxel_down_sample(voxel_size=0.001)
-    # print(np.asarray(pcd.points).shape,np.asarray(pcd_down.points).shape)
-    #correspond
     
     point=points[pt_map]
     
-    judge=filter_camera_space_points(point)
+    judge=filter_camera_space_points(point, camera_model=camera_model)
     return point[judge],np.asarray(pt_map)[judge]
+
+
+def sampling_quality_score_from_point_cam(point_cam, camera_model, voxel_size, temperature):
+    if len(point_cam) == 0:
+        return np.zeros(0, dtype=float)
+    depth = np.clip(point_cam[:, 2], 1e-6, None)
+    projected_voxel_px = min(float(camera_model["fx"]), float(camera_model["fy"])) * float(voxel_size) / depth
+    threshold = float(camera_model["min_projected_voxel_px"])
+    temperature = max(float(temperature), 1e-6)
+    return 1.0 / (1.0 + np.exp(-(projected_voxel_px - threshold) / temperature))
+
+
+def aggregate_sampling_quality_deficit(quality_scores, topk):
+    quality_scores = np.asarray(quality_scores, dtype=float)
+    if quality_scores.ndim != 2:
+        raise ValueError("quality_scores must have shape (N_voxel, N_camera)")
+    topk = int(max(1, min(topk, quality_scores.shape[1])))
+    strongest = np.sort(quality_scores, axis=1)[:, -topk:]
+    quality = np.mean(strongest, axis=1)
+    return 1.0 - np.clip(quality, 0.0, 1.0)
 
 
 def clipped_cosine(vec_a, vec_b, clip_min=0.0, clip_max=1.0):
@@ -133,16 +146,39 @@ def uses_free_space_support(args):
 def voxel_model(args,voxelnormals,rotation,position):
     #################################get voxels in how many cameras################### 
 
-    #voxel center vis
     free_space_mode = uses_free_space_support(args)
     voxel_visibility = np.zeros([len(voxelnormals),len(position)])
+    voxel_quality = np.zeros([len(voxelnormals),len(position)], dtype=float)
     for i in range(len(position)):
+        camera_model = get_camera_model(i)
         if free_space_mode:
-            judge,_=get_visible_points_free_space(voxelnormals,position[i],rotation[i])
+            judge, _, point_cam = get_visible_points_free_space(
+                voxelnormals,
+                position[i],
+                rotation[i],
+                camera_model=camera_model,
+                return_point_cam=True,
+            )
         else:
-            judge,_=get_visible_points(voxelnormals,position[i],rotation[i],200)
+            point_cam, judge = get_visiblep_opt(
+                voxelnormals,
+                position[i],
+                rotation[i],
+                200,
+                camera_model=camera_model,
+            )
         voxel_visibility[judge,i]=1
+        voxel_quality[judge, i] = sampling_quality_score_from_point_cam(
+            point_cam,
+            camera_model,
+            voxel_size=args.voxelsize,
+            temperature=args.sampling_quality_temperature,
+        )
     voxel_unvis=args.kcoverage-np.clip(np.sum(voxel_visibility,axis=1),0,args.kcoverage)
+    quality_deficit = aggregate_sampling_quality_deficit(
+        voxel_quality,
+        topk=getattr(args, "sampling_quality_topk", 2),
+    )
 
     angle_cc = np.ones([len(voxelnormals)], dtype=float) * (np.pi / 2)
     angle_co = np.ones([len(voxelnormals)], dtype=float)
@@ -167,6 +203,7 @@ def voxel_model(args,voxelnormals,rotation,position):
             voxel_unvis[:, None],
             angle_cc[:, None],
             angle_co[:, None],
+            quality_deficit[:, None],
         ),
         axis=1,
     )

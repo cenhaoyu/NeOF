@@ -1,15 +1,15 @@
 import argparse
+import json
 import os
 import shutil
 from camera_constraints import (
     apply_camera_constraint_shape_to_path,
     resolve_camera_constraint_args,
-    resolve_distance_args,
 )
 from config_utils import parse_args_with_json_config
 from dataset.occupancy_map import build_swept_object_visualization_cloud
 from dataset.dataset import *
-from dataset.utils import configure_camera_intrinsics
+from dataset.utils import configure_camera_models_from_args
 from visualization.visual_cam_points import *
 from torch.utils.tensorboard import SummaryWriter
 from optimization import CameraLayerOpt
@@ -34,14 +34,13 @@ if __name__ =='__main__':
     parser.add_argument('--path',type=str, default='random/moto/')
     parser.add_argument('--lr1',type=float,default=1e-3)
     parser.add_argument('--lr2',type=float,default=1e-3)
-    parser.add_argument('--preferred_distance',type=float,default=None)
-    parser.add_argument('--height',type=float,default=None,help=argparse.SUPPRESS)
     parser.add_argument('--image_width',type=int,default=640)
     parser.add_argument('--image_height',type=int,default=480)
     parser.add_argument('--fx',type=float,default=320.0)
     parser.add_argument('--fy',type=float,default=320.0)
     parser.add_argument('--cx',type=float,default=319.5)
     parser.add_argument('--cy',type=float,default=239.5)
+    parser.add_argument('--camera_models', type=json.loads, default=None)
     parser.add_argument('--model_physical_height',type=float,default=None)
     parser.add_argument('--cameranum',type=int,default=10)
     parser.add_argument('--epoches',type=int,default=20)
@@ -55,6 +54,7 @@ if __name__ =='__main__':
     parser.add_argument('--wvis',type=float,default=0.4)
     parser.add_argument('--wcc',type=float,default=0.3)
     parser.add_argument('--wco',type=float,default=0.3)
+    parser.add_argument('--wres',type=float,default=0.0)
     parser.add_argument('--modelname',type=str,default='scene/room_0.ply')
     parser.add_argument('--voxelnum',type=int,default=30000)
     parser.add_argument('--voxelsize',type=float,default=0.02)
@@ -132,6 +132,9 @@ if __name__ =='__main__':
     parser.add_argument('--visibility_depth_temperature',type=float,default=0.05)
     parser.add_argument('--visibility_fov_temperature',type=float,default=0.05)
     parser.add_argument('--visibility_normal_temperature',type=float,default=0.1)
+    parser.add_argument('--sampling_quality_temperature',type=float,default=0.5)
+    parser.add_argument('--sampling_quality_topk',type=int,default=2)
+    parser.add_argument('--sampling_quality_min_projected_voxel_px',type=float,default=1.5)
     parser.add_argument('--camera_constraint_enable',dest='camera_constraint_enable',action='store_true')
     parser.add_argument('--no_camera_constraint_enable',dest='camera_constraint_enable',action='store_false')
     parser.set_defaults(camera_constraint_enable=False)
@@ -167,14 +170,23 @@ if __name__ =='__main__':
     parser.add_argument('--world_axis_tick_size',type=float,default=None)
     parser.add_argument('--world_axis_radius',type=float,default=None)
     parser.add_argument('--world_axis_label_size',type=float,default=None)
+    parser.add_argument('--camera_vis_scale',type=float,default=0.2)
+    parser.add_argument('--show_camera_optical_axis',dest='show_camera_optical_axis',action='store_true')
+    parser.add_argument('--no_show_camera_optical_axis',dest='show_camera_optical_axis',action='store_false')
+    parser.set_defaults(show_camera_optical_axis=True)
+    parser.add_argument('--show_camera_fov',dest='show_camera_fov',action='store_true')
+    parser.add_argument('--no_show_camera_fov',dest='show_camera_fov',action='store_false')
+    parser.set_defaults(show_camera_fov=True)
+    parser.add_argument('--camera_optical_axis_length',type=float,default=None)
+    parser.add_argument('--camera_line_radius',type=float,default=None)
     parser.add_argument('--vismode',type=str,choices=['save','interactive','none'],default='save')
     args = parse_args_with_json_config(parser)
-    args = resolve_distance_args(args, default_preferred_distance=2.0)
     args = resolve_camera_constraint_args(args)
     args.path = apply_camera_constraint_shape_to_path(args.path, args.camera_constraint_shape)
     if args.vismode == 'none':
         print("vismode=none is treated as headless save mode; visualization files will still be written.")
         args.vismode = 'save'
+    args = configure_camera_models_from_args(args)
     if not args.camera_constraint_enable:
         raise ValueError("camera_init_strategy requires camera_constraint_enable=true")
     if args.decay != 1e-4 and args.pose_lr_decay == 0.95:
@@ -222,10 +234,6 @@ if __name__ =='__main__':
         raise ValueError("occupancy_box_grid_step must be positive")
     if args.occupancy_gaussian_sigma_xyz is not None and any(value <= 0 for value in args.occupancy_gaussian_sigma_xyz):
         raise ValueError("occupancy_gaussian_sigma_xyz must be positive on every axis")
-    if args.image_width <= 0 or args.image_height <= 0:
-        raise ValueError("image_width and image_height must be positive")
-    if args.fx <= 0 or args.fy <= 0:
-        raise ValueError("fx and fy must be positive")
     if args.model_physical_height is not None and args.model_physical_height <= 0:
         raise ValueError("model_physical_height must be positive when provided")
     if args.coverage_vis_point_size <= 0:
@@ -236,8 +244,20 @@ if __name__ =='__main__':
         raise ValueError("occupancy_hotspot_fraction must be in (0, 1]")
     if args.visibility_depth_temperature <= 0 or args.visibility_fov_temperature <= 0 or args.visibility_normal_temperature <= 0:
         raise ValueError("soft visibility temperatures must be positive")
+    if args.sampling_quality_temperature <= 0:
+        raise ValueError("sampling_quality_temperature must be positive")
+    if args.sampling_quality_topk < 1:
+        raise ValueError("sampling_quality_topk must be at least 1")
+    if args.sampling_quality_min_projected_voxel_px <= 0:
+        raise ValueError("sampling_quality_min_projected_voxel_px must be positive")
     if args.reset_random_samples_per_voxel < 1:
         raise ValueError("reset_random_samples_per_voxel must be at least 1")
+    if args.camera_vis_scale <= 0:
+        raise ValueError("camera_vis_scale must be positive")
+    if args.camera_optical_axis_length is not None and args.camera_optical_axis_length <= 0:
+        raise ValueError("camera_optical_axis_length must be positive when provided")
+    if args.camera_line_radius is not None and args.camera_line_radius <= 0:
+        raise ValueError("camera_line_radius must be positive when provided")
     if args.world_axis_length is not None and args.world_axis_length <= 0:
         raise ValueError("world_axis_length must be positive when provided")
     if args.world_axis_tick_step <= 0:
@@ -267,21 +287,16 @@ if __name__ =='__main__':
     writer=SummaryWriter(tensorboardpath)
     print(f"Resolved result directory: {pcdpath}")
     print(f"Visualization outputs will be written under: {vispath}")
-    ###########################################################################   
-    configure_camera_intrinsics(
-        args.image_width,
-        args.image_height,
-        args.fx,
-        args.fy,
-        args.cx,
-        args.cy,
-    )
+    ###########################################################################
     pcd,voxelnormals,occupancy_weights,occupancy_info,minbound,camerapose,scale,geometry_metadata=Initdatafromrandom(args)
-    print(
-        "Camera model | "
-        f"image={args.image_width}x{args.image_height} | "
-        f"fx={args.fx:.1f}, fy={args.fy:.1f}"
-    )
+    print(f"Camera rig | {len(args.camera_models)} cameras configured")
+    for idx, camera_model in enumerate(args.camera_models):
+        print(
+            f"  Cam {idx:02d} | {camera_model['name']} | "
+            f"image={int(round(camera_model['image_width']))}x{int(round(camera_model['image_height']))} | "
+            f"fx={camera_model['fx']:.1f}, fy={camera_model['fy']:.1f} | "
+            f"min_voxel_px={camera_model['min_projected_voxel_px']:.2f}"
+        )
     print(
         "World-scale geometry | "
         f"target height={geometry_metadata['model_physical_height']:.3f} m | "
@@ -294,12 +309,7 @@ if __name__ =='__main__':
         "model_physical_height": np.array(geometry_metadata["model_physical_height"]),
         "world_scale": np.array(geometry_metadata["world_scale"]),
         "world_coordinate_system": np.array(int(geometry_metadata.get("world_coordinate_system", True))),
-        "image_width": np.array(args.image_width),
-        "image_height": np.array(args.image_height),
-        "fx": np.array(args.fx),
-        "fy": np.array(args.fy),
-        "cx": np.array(args.cx),
-        "cy": np.array(args.cy),
+        "camera_models_json": np.array(json.dumps(args.camera_models)),
     }
     if args.occupancy_map_enable:
         geometry_payload["occupancy_weights"] = occupancy_weights
@@ -343,6 +353,14 @@ if __name__ =='__main__':
     camera_constraint_min = args.camera_constraint_min if args.camera_constraint_enable else None
     camera_constraint_max = args.camera_constraint_max if args.camera_constraint_enable else None
     show_base_geometry = not (args.occupancy_map_enable and not args.show_static_geometry_in_occupancy)
+    camera_vis_kwargs = {
+        "camera_models": args.camera_models,
+        "camera_vis_scale": args.camera_vis_scale,
+        "show_camera_optical_axis": args.show_camera_optical_axis,
+        "show_camera_fov": args.show_camera_fov,
+        "camera_optical_axis_length": args.camera_optical_axis_length,
+        "camera_line_radius": args.camera_line_radius,
+    }
     ###visualization mesh/ply with camera placement
     if args.vismode == 'interactive':
         visMesh(
@@ -375,6 +393,7 @@ if __name__ =='__main__':
             occupancy_vis_route_arrow_length=args.occupancy_vis_route_arrow_length,
             scene_export_prefix=os.path.join(vispath, "initial"),
             show_base_geometry=show_base_geometry,
+            **camera_vis_kwargs,
         )
     elif args.vismode == 'save':
         visMesh(
@@ -406,6 +425,7 @@ if __name__ =='__main__':
             occupancy_vis_route_arrow_length=args.occupancy_vis_route_arrow_length,
             scene_export_prefix=os.path.join(vispath, "initial"),
             show_base_geometry=show_base_geometry,
+            **camera_vis_kwargs,
         )
     #############################################################################
     position,rotation = camlayopt.opt(camerapose)
@@ -442,6 +462,7 @@ if __name__ =='__main__':
             occupancy_vis_route_arrow_length=args.occupancy_vis_route_arrow_length,
             scene_export_prefix=os.path.join(vispath, "optimized"),
             show_base_geometry=show_base_geometry,
+            **camera_vis_kwargs,
         )
     elif args.vismode == 'save':
         visMesh(
@@ -473,6 +494,7 @@ if __name__ =='__main__':
             occupancy_vis_route_arrow_length=args.occupancy_vis_route_arrow_length,
             scene_export_prefix=os.path.join(vispath, "optimized"),
             show_base_geometry=show_base_geometry,
+            **camera_vis_kwargs,
         )
     route_points = occupancy_info.get("route_points") if args.occupancy_map_enable else None
     comparison_route_geometries = []
@@ -523,14 +545,40 @@ if __name__ =='__main__':
     ]
     if args.occupancy_map_enable and args.show_occupancy_map:
         summary_specs.append(("Occupancy legend", os.path.join(vispath, "occupancy_legend.png")))
+    comparison_camera_ray_length = resolve_camera_ray_length(
+        pcd,
+        np.concatenate((initial_position_np, optimized_position_np), axis=0),
+        constraint_min=camera_constraint_min,
+        constraint_max=camera_constraint_max,
+        ray_length=args.camera_optical_axis_length,
+    )
+    camera_overlay_kwargs = {
+        "camera_scale": args.camera_vis_scale,
+        "show_optical_axis": args.show_camera_optical_axis,
+        "show_fov": args.show_camera_fov,
+        "optical_axis_length": comparison_camera_ray_length,
+        "line_radius": args.camera_line_radius,
+    }
 
     if args.save_comparison_visualization and pcd is not None:
         comparison_camera_geometries = []
         comparison_camera_geometries.extend(
-            build_camera_geometries(initial_position_np, initial_rotation_np, color=np.array([[0.2, 0.55, 1.0]]))
+            build_camera_geometries(
+                initial_position_np,
+                initial_rotation_np,
+                color=np.array([[0.2, 0.55, 1.0]]),
+                camera_models=args.camera_models,
+                **camera_overlay_kwargs,
+            )
         )
         comparison_camera_geometries.extend(
-            build_camera_geometries(optimized_position_np, optimized_rotation_np, color=np.array([[1.0, 0.35, 0.1]]))
+            build_camera_geometries(
+                optimized_position_np,
+                optimized_rotation_np,
+                color=np.array([[1.0, 0.35, 0.1]]),
+                camera_models=args.camera_models,
+                **camera_overlay_kwargs,
+            )
         )
         comparison_camera_geometries.extend(
             getCameraTransitionVis(initial_position_np, optimized_position_np)
@@ -577,20 +625,44 @@ if __name__ =='__main__':
         coverage_delta_cloud = getCoverageDeltaPointCloud(voxelnormals[:, :3], coverage_delta)
 
         initial_coverage_overlays = (
-            build_camera_geometries(initial_position_np, initial_rotation_np, color=np.array([[0.2, 0.55, 1.0]]))
+            build_camera_geometries(
+                initial_position_np,
+                initial_rotation_np,
+                color=np.array([[0.2, 0.55, 1.0]]),
+                camera_models=args.camera_models,
+                **camera_overlay_kwargs,
+            )
             + comparison_constraint_geometries
             + comparison_axis_geometries
             + comparison_route_geometries
         )
         optimized_coverage_overlays = (
-            build_camera_geometries(optimized_position_np, optimized_rotation_np, color=np.array([[1.0, 0.35, 0.1]]))
+            build_camera_geometries(
+                optimized_position_np,
+                optimized_rotation_np,
+                color=np.array([[1.0, 0.35, 0.1]]),
+                camera_models=args.camera_models,
+                **camera_overlay_kwargs,
+            )
             + comparison_constraint_geometries
             + comparison_axis_geometries
             + comparison_route_geometries
         )
         delta_coverage_overlays = (
-            build_camera_geometries(initial_position_np, initial_rotation_np, color=np.array([[0.2, 0.55, 1.0]]))
-            + build_camera_geometries(optimized_position_np, optimized_rotation_np, color=np.array([[1.0, 0.35, 0.1]]))
+            build_camera_geometries(
+                initial_position_np,
+                initial_rotation_np,
+                color=np.array([[0.2, 0.55, 1.0]]),
+                camera_models=args.camera_models,
+                **camera_overlay_kwargs,
+            )
+            + build_camera_geometries(
+                optimized_position_np,
+                optimized_rotation_np,
+                color=np.array([[1.0, 0.35, 0.1]]),
+                camera_models=args.camera_models,
+                **camera_overlay_kwargs,
+            )
             + getCameraTransitionVis(initial_position_np, optimized_position_np)
             + comparison_constraint_geometries
             + comparison_axis_geometries
@@ -643,7 +715,13 @@ if __name__ =='__main__':
             show_background=False,
         )
         responsibility_overlays = (
-            build_camera_geometries(optimized_position_np, optimized_rotation_np, color=camera_palette)
+            build_camera_geometries(
+                optimized_position_np,
+                optimized_rotation_np,
+                color=camera_palette,
+                camera_models=args.camera_models,
+                **camera_overlay_kwargs,
+            )
             + comparison_constraint_geometries
             + comparison_axis_geometries
             + comparison_route_geometries
@@ -683,6 +761,8 @@ if __name__ =='__main__':
                         optimized_position_np[camera_idx : camera_idx + 1],
                         optimized_rotation_np[camera_idx : camera_idx + 1],
                         color=camera_palette[camera_idx : camera_idx + 1],
+                        camera_models=args.camera_models[camera_idx : camera_idx + 1],
+                        **camera_overlay_kwargs,
                     )
                     + comparison_constraint_geometries
                     + comparison_axis_geometries

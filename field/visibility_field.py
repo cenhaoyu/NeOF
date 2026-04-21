@@ -75,7 +75,7 @@ class AddAttention(torch.nn.Module):
     self.Wk = nn.Linear(output_channel, output_channel)
 
   def calculate_x_voxelselect(self,x_world,voxel_point,voxel_normal,v,exclude_closest_context=False):
-    # x_world(m,1,3) voxel_point(n,3) voxel_normal(n,3) v(n,3)
+    # x_world(m,1,3) voxel_point(n,3) voxel_normal(n,3) v(n,k)
     with torch.no_grad():
       distance=torch.linalg.norm(x_world-voxel_point.unsqueeze(0),dim=-1)
       sorted_index = torch.argsort(distance, dim=1)
@@ -100,7 +100,7 @@ class AddAttention(torch.nn.Module):
     #x_world (m,1,3)
     #voxel_point (n,3)
     #voxel_normal (n,3)
-    #v (n,3)
+    #v (n,k)
     x,v=self.calculate_x_voxelselect(
         x_world,
         voxel_point,

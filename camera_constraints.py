@@ -8,22 +8,6 @@ import torch
 VOLUME_CONSTRAINT_SHAPES = ("box", "cylinder", "dome")
 SURFACE_CONSTRAINT_SHAPES = ("box_surface", "plane", "cylinder_surface", "dome_surface")
 CAMERA_CONSTRAINT_SHAPES = VOLUME_CONSTRAINT_SHAPES + SURFACE_CONSTRAINT_SHAPES
-
-
-def resolve_distance_args(args, default_preferred_distance):
-    preferred_distance = getattr(args, "preferred_distance", None)
-    legacy_height = getattr(args, "height", None)
-
-    if preferred_distance is None:
-        preferred_distance = legacy_height if legacy_height is not None else default_preferred_distance
-    preferred_distance = float(preferred_distance)
-    if preferred_distance <= 0:
-        raise ValueError("preferred_distance must be positive")
-
-    args.preferred_distance = preferred_distance
-    return args
-
-
 def apply_camera_constraint_shape_to_path(relative_path, camera_constraint_shape):
     normalized_relative = os.path.normpath(relative_path)
     parent_dir, leaf_dir = os.path.split(normalized_relative)
@@ -451,44 +435,6 @@ def ray_camera_volume_positive_interval(origin, direction, shape, box_min, box_m
         return _positive_interval(_intersect_intervals(ellipsoid_interval, z_interval, eps=eps))
 
     raise ValueError(f"Unsupported camera volume shape: {shape}")
-
-
-def constrained_camera_center_on_ray(
-    surface_point,
-    outward_direction,
-    preferred_distance,
-    box_min,
-    box_max,
-    shape="box",
-):
-    surface_point = np.asarray(surface_point, dtype=float)
-    outward_direction = np.asarray(outward_direction, dtype=float)
-    norm = np.linalg.norm(outward_direction)
-    if norm <= 1e-8:
-        return None
-    outward_direction = outward_direction / norm
-
-    if box_min is None or box_max is None:
-        return surface_point + preferred_distance * outward_direction
-
-    interval = ray_camera_volume_positive_interval(
-        surface_point,
-        outward_direction,
-        shape,
-        box_min,
-        box_max,
-    )
-    if interval is None:
-        return None
-
-    t_min, t_max = interval
-    if t_max < t_min:
-        return None
-    distance = np.clip(preferred_distance, t_min, t_max)
-    candidate = surface_point + distance * outward_direction
-    return candidate if point_in_camera_constraint(candidate, shape, box_min, box_max) else None
-
-
 def sample_camera_points_in_constraint(num_points, shape, box_min, box_max, constraint_data=None, rng=None):
     if box_min is None or box_max is None:
         raise ValueError("resolved camera constraint bounds are required for constrained sampling")
