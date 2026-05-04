@@ -378,6 +378,55 @@ class CameraLayerOpt:
                     saveTrainingResult(self.posepath+str(epoch)+"_"+str(min_camera+1)+".npy",position,rotation,self.scale)
                 pose_optimizer.state.clear()
 
+                with torch.no_grad():
+                    reset_position_np = position.detach().cpu().numpy()
+                    reset_rotation_np = rotation.detach().cpu().numpy()
+                    reset_voxelmodel, reset_visibility = voxel_model(
+                        self.args,
+                        self.voxelnormals,
+                        reset_rotation_np,
+                        reset_position_np,
+                    )
+                    reset_rate_v, _ = self.coverage_gap_from_visibility(reset_visibility, weighted=True)
+                    reset_joint_score = self.global_need_score(
+                        reset_voxelmodel[:, 6:].cpu().numpy(),
+                        weighted=True,
+                    )
+                    reset_unweighted_rate_v = None
+                    reset_unweighted_joint_score = None
+                    if self.args.occupancy_map_enable:
+                        reset_unweighted_rate_v, _ = self.coverage_gap_from_visibility(
+                            reset_visibility,
+                            weighted=False,
+                        )
+                        reset_unweighted_joint_score = self.global_need_score(
+                            reset_voxelmodel[:, 6:].cpu().numpy(),
+                            weighted=False,
+                        )
+
+                reset_status = []
+                if reset_joint_score < epoch_best_joint_score:
+                    epoch_best_joint_score = reset_joint_score
+                    bestposition = position.detach().clone()
+                    bestrotation = rotation.detach().clone()
+                    reset_status.append("epoch best")
+                    if reset_joint_score < best_joint_score:
+                        best_joint_score = reset_joint_score
+                        bbp = position.detach().clone()
+                        bbr = rotation.detach().clone()
+                        reset_status.append("global best")
+
+                self.print_coverage_summary(
+                    "Post-reset placement quality",
+                    reset_rate_v,
+                    reset_joint_score,
+                    position=reset_position_np,
+                    unweighted_voxel_gap=reset_unweighted_rate_v,
+                    unweighted_joint_gap=reset_unweighted_joint_score,
+                )
+                if reset_status:
+                    print(f"  Post-reset accepted as {', '.join(reset_status)}")
+
             camerapose = torch.cat((position,torch.cat((rotation[:,0,:],rotation[:,2,:]),1)),1)
             self.model.set_pose(camerapose.detach())
             self.set_pose_optimizer_lr(pose_optimizer, epoch)

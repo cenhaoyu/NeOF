@@ -21,39 +21,46 @@
   "cx": 959.5,
   "cy": 539.5,
 
-  // Heterogeneous camera. cameranum must match this list length.
+  // Camera rig. cameranum must match this list length.
+  // Physical camera parameters are converted to fx/fy internally:
+  //   fx = focal_length / sensor_width_mm * resolution_x
+  //   fy = focal_length / sensor_height_mm * resolution_y
   "camera_models": [
     {
-      "name": "cam_00_wide",
-      "image_width": 2560,
-      "image_height": 1440,
-      "fov_x_deg": 96.0,
-      "fov_y_deg": 62.0,
+      "name": "cam_00",
+      "focal_length": 25.9,
+      "sensor_width_mm": 36.0,
+      "sensor_height_mm": 24.0,
+      "resolution_x": 1920,
+      "resolution_y": 1080,
       "min_projected_voxel_px": 1.5
     },
     {
-      "name": "cam_01_narrow",
-      "image_width": 3840,
-      "image_height": 2160,
-      "fov_x_deg": 58.0,
-      "fov_y_deg": 36.0,
-      "min_projected_voxel_px": 2.0
-    },
-    {
-      "name": "cam_02_wide",
-      "image_width": 2560,
-      "image_height": 1440,
-      "fov_x_deg": 96.0,
-      "fov_y_deg": 62.0,
+      "name": "cam_01",
+      "focal_length": 25.9,
+      "sensor_width_mm": 36.0,
+      "sensor_height_mm": 24.0,
+      "resolution_x": 1920,
+      "resolution_y": 1080,
       "min_projected_voxel_px": 1.5
     },
     {
-      "name": "cam_03_narrow",
-      "image_width": 3840,
-      "image_height": 2160,
-      "fov_x_deg": 58.0,
-      "fov_y_deg": 36.0,
-      "min_projected_voxel_px": 2.0
+      "name": "cam_02",
+      "focal_length": 25.9,
+      "sensor_width_mm": 36.0,
+      "sensor_height_mm": 24.0,
+      "resolution_x": 1920,
+      "resolution_y": 1080,
+      "min_projected_voxel_px": 1.5
+    },
+    {
+      "name": "cam_03",
+      "focal_length": 25.9,
+      "sensor_width_mm": 36.0,
+      "sensor_height_mm": 24.0,
+      "resolution_x": 1920,
+      "resolution_y": 1080,
+      "min_projected_voxel_px": 1.5
     }
   ],
 
@@ -64,7 +71,7 @@
   "cameranum": 4,
 
   // Number of outer hybrid-optimization epochs.
-  "epoches": 2,
+  "epoches": 3,
 
   // Number of gradient-based pose refinement steps per outer epoch.
   // 10 is a reasonable default after switching to the softer differentiable visibility surrogate.
@@ -80,10 +87,10 @@
   "isscene": 0,
 
   // Weight of the visibility/coverage loss term Lvis.
-  "wvis": 0.3,
+  "wvis": 0.5,
 
   // Weight of the camera-camera angle quality term Lcc.
-  "wcc": 0.5,
+  "wcc": 0.3,
 
   // Weight of the camera-object angle quality term Lco.
   "wco": 0.2,
@@ -98,7 +105,7 @@
   "voxelnum": 30000,
 
   // Voxel size for surface/support voxelization, in meters.
-  "voxelsize": 0.02,
+  "voxelsize": 0.1,
 
   // Sampling-quality deficit uses the projected size of one voxel in pixels.
   // topk=2 emphasizes multi-view reconstruction quality.
@@ -161,9 +168,9 @@
   // Comment out this whole block when switching to another mode below.
   // "occupancy_map_mode": "free_space_box",
   // "occupancy_box_distribution": "uniform",
-  // "occupancy_box_min": [-0.875, 0.0, -0.875],
-  // "occupancy_box_max": [0.875, 0.525, 1.75],
-  // "occupancy_box_grid_step": 0.175,
+  // "occupancy_box_min": [-5, 0, 0],
+  // "occupancy_box_max": [5, 1, 2],
+  // "occupancy_box_grid_step": 0.2,
   // "show_occupancy_route": false,
   // "show_occupancy_route_direction": false,
 
@@ -180,27 +187,27 @@
   // ------------------------------
   // Alternative mode: free_space_box + gaussian
   // Uncomment this whole block and comment out the active block above.
-  // "occupancy_map_mode": "free_space_box",
-  // "occupancy_box_distribution": "gaussian",
-  // "occupancy_box_min": [-0.875, 0.0, -0.875],
-  // "occupancy_box_max": [0.875, 0.525, 1.75],
-  // "occupancy_box_grid_step": 0.175,
-  // "occupancy_gaussian_center": [0.0, 0.2625, 0.4375],
-  // "occupancy_gaussian_sigma_xyz": [0.315, 0.1225, 0.42],
-  // "show_occupancy_route": false,
-  // "show_occupancy_route_direction": false,
+  "occupancy_map_mode": "free_space_box",
+  "occupancy_box_distribution": "gaussian",
+  "occupancy_box_min": [-5, 0, 0],
+  "occupancy_box_max": [5, 1, 2],
+  "occupancy_box_grid_step": 0.2,
+  "occupancy_gaussian_center": [0.0, 0.5, 1],
+  "occupancy_gaussian_sigma_xyz": [0.5, 0.2, 0.5],
+  "show_occupancy_route": false,
+  "show_occupancy_route_direction": false,
 
   // ------------------------------
   // Alternative mode: free_space_box + gaussian_mixture
   // Uncomment this whole block and comment out the active block above.
-  "occupancy_map_mode": "free_space_box",
-  "occupancy_box_distribution": "gaussian_mixture",
-  "occupancy_map_file": "occupancy_free_space_gaussian_mixture_example.json",
-  "occupancy_box_min": [-5, 0, 0],
-  "occupancy_box_max": [5, 1, 2],
-  "occupancy_box_grid_step": 0.2,
-  "show_occupancy_route": false,
-  "show_occupancy_route_direction": false,
+  // "occupancy_map_mode": "free_space_box",
+  // "occupancy_box_distribution": "gaussian_mixture",
+  // "occupancy_map_file": "occupancy_free_space_gaussian_mixture_example.json",
+  // "occupancy_box_min": [-5, 0, 0],
+  // "occupancy_box_max": [5, 1, 2],
+  // "occupancy_box_grid_step": 0.2,
+  // "show_occupancy_route": false,
+  // "show_occupancy_route_direction": false,
 
   // Shared occupancy visualization settings.
   // In free_space_box mode, occupancy_box_grid_step is the actual support discretization in meters.

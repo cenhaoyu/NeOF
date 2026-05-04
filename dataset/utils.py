@@ -31,6 +31,29 @@ def _focal_length_from_fov(image_extent, fov_deg):
     return 0.5 * float(image_extent) / np.tan(np.deg2rad(fov_deg) * 0.5)
 
 
+def _fov_from_sensor(sensor_extent_mm, focal_length_mm):
+    sensor_extent_mm = float(sensor_extent_mm)
+    focal_length_mm = float(focal_length_mm)
+    if sensor_extent_mm <= 0.0:
+        raise ValueError("sensor dimensions must be positive")
+    if focal_length_mm <= 0.0:
+        raise ValueError("focal_length must be positive")
+    return np.rad2deg(2.0 * np.arctan(sensor_extent_mm / (2.0 * focal_length_mm)))
+
+
+def _focal_length_px_from_physical(focal_length_mm, sensor_extent_mm, resolution_px):
+    focal_length_mm = float(focal_length_mm)
+    sensor_extent_mm = float(sensor_extent_mm)
+    resolution_px = float(resolution_px)
+    if focal_length_mm <= 0.0:
+        raise ValueError("focal_length must be positive")
+    if sensor_extent_mm <= 0.0:
+        raise ValueError("sensor dimensions must be positive")
+    if resolution_px <= 0.0:
+        raise ValueError("camera resolution must be positive")
+    return focal_length_mm / sensor_extent_mm * resolution_px
+
+
 def _build_intrinsic_matrix(fx, fy, cx, cy):
     return np.array(
         [
@@ -48,8 +71,8 @@ def _normalize_camera_model(camera_model, index, defaults):
     if not isinstance(camera_model, dict):
         raise ValueError("each camera model must be a JSON object / Python dict")
 
-    image_width = float(camera_model.get("image_width", defaults["image_width"]))
-    image_height = float(camera_model.get("image_height", defaults["image_height"]))
+    image_width = float(camera_model.get("image_width", camera_model.get("resolution_x", defaults["image_width"])))
+    image_height = float(camera_model.get("image_height", camera_model.get("resolution_y", defaults["image_height"])))
     if image_width <= 0 or image_height <= 0:
         raise ValueError("camera image_width and image_height must be positive")
 
@@ -59,6 +82,24 @@ def _normalize_camera_model(camera_model, index, defaults):
     cy = camera_model.get("cy", defaults["cy"])
     fov_x_deg = camera_model.get("fov_x_deg")
     fov_y_deg = camera_model.get("fov_y_deg")
+    focal_length_mm = camera_model.get("focal_length_mm", camera_model.get("focal_length"))
+    sensor_width_mm = camera_model.get("sensor_width_mm")
+    sensor_height_mm = camera_model.get("sensor_height_mm")
+
+    if focal_length_mm is not None or sensor_width_mm is not None or sensor_height_mm is not None:
+        if focal_length_mm is None or sensor_width_mm is None or sensor_height_mm is None:
+            raise ValueError(
+                "physical camera model requires focal_length, sensor_width_mm, and sensor_height_mm"
+            )
+        if "fx" not in camera_model:
+            fx = _focal_length_px_from_physical(focal_length_mm, sensor_width_mm, image_width)
+        if "fy" not in camera_model:
+            fy = _focal_length_px_from_physical(focal_length_mm, sensor_height_mm, image_height)
+        if fov_x_deg is None:
+            fov_x_deg = _fov_from_sensor(sensor_width_mm, focal_length_mm)
+        if fov_y_deg is None:
+            fov_y_deg = _fov_from_sensor(sensor_height_mm, focal_length_mm)
+
     if fx is None:
         fx = _focal_length_from_fov(image_width, fov_x_deg)
     if fy is None:
@@ -98,6 +139,16 @@ def _normalize_camera_model(camera_model, index, defaults):
         "min_projected_voxel_px": min_projected_voxel_px,
         "intrinsic": _build_intrinsic_matrix(fx, fy, cx, cy),
     }
+    if focal_length_mm is not None:
+        normalized["focal_length"] = float(focal_length_mm)
+    if sensor_width_mm is not None:
+        normalized["sensor_width_mm"] = float(sensor_width_mm)
+    if sensor_height_mm is not None:
+        normalized["sensor_height_mm"] = float(sensor_height_mm)
+    if "resolution_x" in camera_model:
+        normalized["resolution_x"] = image_width
+    if "resolution_y" in camera_model:
+        normalized["resolution_y"] = image_height
     if fov_x_deg is not None:
         normalized["fov_x_deg"] = float(fov_x_deg)
     if fov_y_deg is not None:
