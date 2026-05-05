@@ -166,13 +166,13 @@
   // ------------------------------
   // Active mode: free_space_box + uniform
   // Comment out this whole block when switching to another mode below.
-  // "occupancy_map_mode": "free_space_box",
-  // "occupancy_box_distribution": "uniform",
-  // "occupancy_box_min": [-5, 0, 0],
-  // "occupancy_box_max": [5, 1, 2],
-  // "occupancy_box_grid_step": 0.2,
-  // "show_occupancy_route": false,
-  // "show_occupancy_route_direction": false,
+  "occupancy_map_mode": "free_space_box",
+  "occupancy_box_distribution": "uniform",
+  "occupancy_box_min": [-5, 0, 0],
+  "occupancy_box_max": [5, 1, 2],
+  "occupancy_box_grid_step": 0.2,
+  "show_occupancy_route": false,
+  "show_occupancy_route_direction": false,
 
   // ------------------------------
   // Alternative mode: route_kde
@@ -187,15 +187,15 @@
   // ------------------------------
   // Alternative mode: free_space_box + gaussian
   // Uncomment this whole block and comment out the active block above.
-  "occupancy_map_mode": "free_space_box",
-  "occupancy_box_distribution": "gaussian",
-  "occupancy_box_min": [-5, 0, 0],
-  "occupancy_box_max": [5, 1, 2],
-  "occupancy_box_grid_step": 0.2,
-  "occupancy_gaussian_center": [0.0, 0.5, 1],
-  "occupancy_gaussian_sigma_xyz": [0.5, 0.2, 0.5],
-  "show_occupancy_route": false,
-  "show_occupancy_route_direction": false,
+  // "occupancy_map_mode": "free_space_box",
+  // "occupancy_box_distribution": "gaussian",
+  // "occupancy_box_min": [-5, 0, 0],
+  // "occupancy_box_max": [5, 1, 2],
+  // "occupancy_box_grid_step": 0.2,
+  // "occupancy_gaussian_center": [0.0, 0.5, 1],
+  // "occupancy_gaussian_sigma_xyz": [0.5, 0.2, 0.5],
+  // "show_occupancy_route": false,
+  // "show_occupancy_route_direction": false,
 
   // ------------------------------
   // Alternative mode: free_space_box + gaussian_mixture
