@@ -4,7 +4,7 @@ import os
 
 import numpy as np
 
-from camera_constraints import apply_camera_constraint_shape_to_path
+from camera_constraints import CAMERA_CONSTRAINT_SHAPES, apply_camera_constraint_shape_to_path
 from config_utils import parse_args_with_json_config
 from dataset.occupancy_map import build_occupancy_support, occupancy_uses_free_space_support
 from dataset.pcd import getPointNormalfromPly
@@ -28,6 +28,34 @@ DEFAULT_REPROJ_THRESHOLDS = [0.5, 1.0, 2.0]
 
 def resolve_model_path(modelname):
     return modelname if modelname.startswith("data/") else os.path.join("data", modelname)
+
+
+def apply_solver_to_path(relative_path, solver):
+    if solver in (None, "", "neof"):
+        return relative_path
+
+    normalized_relative = os.path.normpath(relative_path)
+    parent_dir, leaf_dir = os.path.split(normalized_relative)
+    if leaf_dir in ("", ".", os.sep):
+        raise ValueError("path must end with a valid directory name")
+
+    suffix = f"_{solver}"
+    for shape_name in CAMERA_CONSTRAINT_SHAPES:
+        shape_suffix = f"_{shape_name}"
+        if leaf_dir.endswith(shape_suffix):
+            leaf_base = leaf_dir[: -len(shape_suffix)]
+            if not leaf_base.endswith(suffix):
+                leaf_base = f"{leaf_base}{suffix}"
+            leaf_dir = f"{leaf_base}{shape_suffix}"
+            break
+    else:
+        if not leaf_dir.endswith(suffix):
+            leaf_dir = f"{leaf_dir}{suffix}"
+
+    solver_path = os.path.join(parent_dir, leaf_dir) if parent_dir else leaf_dir
+    if relative_path.endswith(os.sep):
+        return solver_path + os.sep
+    return solver_path
 
 
 def resolve_pose_path(default_path, override_path):
@@ -920,10 +948,11 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, default=None)
     parser.add_argument("--path", type=str, default="random/brother/")
+    parser.add_argument("--solver", type=str, choices=["neof", "bip"], default="neof")
     parser.add_argument(
         "--camera_constraint_shape",
         type=str,
-        choices=["box", "box_surface", "cylinder", "dome", "plane", "cylinder_surface", "dome_surface"],
+        choices=CAMERA_CONSTRAINT_SHAPES,
         default=None,
     )
     parser.add_argument("--modelname", type=str, required=True)
@@ -986,6 +1015,7 @@ def main():
     parser.add_argument("--optimized_pose", type=str, default=None)
     parser.add_argument("--output_json", type=str, default=None)
     args = parse_args_with_json_config(parser, allow_unknown_config_keys=True)
+    args.path = apply_solver_to_path(args.path, args.solver)
     if args.camera_constraint_shape is not None:
         args.path = apply_camera_constraint_shape_to_path(args.path, args.camera_constraint_shape)
     args = configure_camera_models_from_args(args)

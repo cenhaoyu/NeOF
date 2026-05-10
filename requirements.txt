@@ -3,4 +3,5 @@ numpy
 itertools
 open3d
 matplotlib
+scipy
 time

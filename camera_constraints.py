@@ -6,7 +6,7 @@ import torch
 
 
 VOLUME_CONSTRAINT_SHAPES = ("box", "cylinder", "dome")
-SURFACE_CONSTRAINT_SHAPES = ("box_surface", "plane", "cylinder_surface", "dome_surface")
+SURFACE_CONSTRAINT_SHAPES = ("box_surface", "box_walls", "plane", "cylinder_surface", "dome_surface")
 CAMERA_CONSTRAINT_SHAPES = VOLUME_CONSTRAINT_SHAPES + SURFACE_CONSTRAINT_SHAPES
 def apply_camera_constraint_shape_to_path(relative_path, camera_constraint_shape):
     normalized_relative = os.path.normpath(relative_path)
@@ -178,7 +178,7 @@ def resolve_camera_constraint_args(args):
         )
 
     if camera_constraint_enable:
-        if camera_constraint_shape in ("box", "box_surface"):
+        if camera_constraint_shape in ("box", "box_surface", "box_walls"):
             constraint_data = _resolve_box_constraint(args, shape=camera_constraint_shape)
         elif camera_constraint_shape in ("cylinder", "cylinder_surface"):
             constraint_data = _resolve_cylinder_like_constraint(args, camera_constraint_shape)
@@ -253,6 +253,15 @@ def point_in_camera_constraint(point, shape, box_min, box_max, constraint_data=N
         center = 0.5 * (box_min + box_max)
         normalized = np.abs((point - center) / np.maximum(half_extent, eps))
         return bool(np.max(normalized) >= 1.0 - eps)
+
+    if shape == "box_walls":
+        inside = np.all(point >= box_min - eps) and np.all(point <= box_max + eps)
+        if not inside:
+            return False
+        half_extent_xy = np.maximum(0.5 * (box_max[:2] - box_min[:2]), eps)
+        center_xy = 0.5 * (box_min[:2] + box_max[:2])
+        normalized_xy = np.abs((point[:2] - center_xy) / half_extent_xy)
+        return bool(np.max(normalized_xy) >= 1.0 - eps)
 
     if shape == "plane":
         center, span_u, span_v = _plane_numpy_data(constraint_data)
@@ -478,6 +487,29 @@ def sample_camera_points_in_constraint(num_points, shape, box_min, box_max, cons
         points[face_ids == 5, 2] = box_max[2]
         return points
 
+    if shape == "box_walls":
+        lengths = box_max - box_min
+        face_areas = np.array(
+            [
+                lengths[1] * lengths[2],
+                lengths[1] * lengths[2],
+                lengths[0] * lengths[2],
+                lengths[0] * lengths[2],
+            ],
+            dtype=float,
+        )
+        probabilities = face_areas / np.sum(face_areas)
+        face_ids = rng.choice(4, size=num_points, p=probabilities)
+        points = np.empty((num_points, 3), dtype=float)
+        points[:, 0] = rng.uniform(box_min[0], box_max[0], size=num_points)
+        points[:, 1] = rng.uniform(box_min[1], box_max[1], size=num_points)
+        points[:, 2] = rng.uniform(box_min[2], box_max[2], size=num_points)
+        points[face_ids == 0, 0] = box_min[0]
+        points[face_ids == 1, 0] = box_max[0]
+        points[face_ids == 2, 1] = box_min[1]
+        points[face_ids == 3, 1] = box_max[1]
+        return points
+
     if shape == "cylinder":
         theta = rng.uniform(-math.pi, math.pi, size=num_points)
         radial = np.sqrt(rng.uniform(0.0, 1.0, size=num_points))
@@ -558,6 +590,23 @@ def torch_position_to_constraint_parameter(position, shape, box_min, box_max, co
         projected = 0.5 * torch.clamp(normalized, -1.0 + eps, 1.0 - eps)
         return _torch_atanh(projected)
 
+    if shape == "box_walls":
+        center_xy = 0.5 * (box_min[:2] + box_max[:2])
+        half_extent_xy = torch.clamp(0.5 * (box_max[:2] - box_min[:2]), min=eps)
+        z_range = torch.clamp(box_max[2] - box_min[2], min=eps)
+        normalized_xy = (position[:, :2] - center_xy.unsqueeze(0)) / half_extent_xy.unsqueeze(0)
+        projected_xy = 0.5 * torch.clamp(normalized_xy, -1.0 + eps, 1.0 - eps)
+        z_norm = (position[:, 2] - box_min[2]) / z_range
+        z_norm = torch.clamp(z_norm, eps, 1.0 - eps)
+        return torch.stack(
+            (
+                _torch_atanh(projected_xy[:, 0]),
+                _torch_atanh(projected_xy[:, 1]),
+                _torch_logit(z_norm),
+            ),
+            dim=1,
+        )
+
     center = 0.5 * (box_min + box_max)
     rx = torch.clamp(0.5 * (box_max[0] - box_min[0]), min=eps)
     ry = torch.clamp(0.5 * (box_max[1] - box_min[1]), min=eps)
@@ -630,6 +679,19 @@ def torch_constraint_parameter_to_position(parameter, shape, box_min, box_max, c
         fallback[:, 0] = 1.0
         normalized = torch.where(scale > 1e-6, normalized, fallback)
         return center + half_extent * normalized
+
+    if shape == "box_walls":
+        center_xy = 0.5 * (box_min[:2] + box_max[:2])
+        half_extent_xy = 0.5 * (box_max[:2] - box_min[:2])
+        projected_xy = torch.tanh(parameter[:, :2])
+        scale = torch.amax(torch.abs(projected_xy), dim=1, keepdim=True)
+        normalized_xy = projected_xy / torch.clamp(scale, min=1e-6)
+        fallback_xy = torch.zeros_like(normalized_xy)
+        fallback_xy[:, 0] = 1.0
+        normalized_xy = torch.where(scale > 1e-6, normalized_xy, fallback_xy)
+        xy = center_xy.unsqueeze(0) + half_extent_xy.unsqueeze(0) * normalized_xy
+        z = box_min[2] + torch.sigmoid(parameter[:, 2]) * (box_max[2] - box_min[2])
+        return torch.stack((xy[:, 0], xy[:, 1], z), dim=1)
 
     center = 0.5 * (box_min + box_max)
     rx = 0.5 * (box_max[0] - box_min[0])

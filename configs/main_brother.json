@@ -83,6 +83,27 @@
   // Target K-coverage value in the paper's coverage term.
   "kcoverage": 3,
 
+  // Solver selector. Use "neof" for the neural observation field solver,
+  // or override with "--solver bip" to run the BIP solver on the same input data.
+  "solver": "neof",
+
+  // BIP solver settings. These are active only when solver="bip".
+  // pair_angle is the default BIP objective: a support point is covered when
+  // a selected camera pair observes it with a valid triangulation angle.
+  // kcoverage is kept as an optional ablation matching the NeOF K-coverage term.
+  "bip_coverage_mode": "pair_angle",
+  "bip_candidate_position_step": 0.5,
+  "bip_target_count": 5,
+  "bip_max_candidate_positions": 500,
+  "bip_max_base_candidates": 800,
+  "bip_pair_candidate_limit": 20,
+  "bip_min_visible_points": 1,
+  "bip_time_limit": 20.0,
+  "bip_min_triangulation_angle_deg": 15.0,
+  "bip_max_triangulation_angle_deg": 165.0,
+  "bip_max_pair_variables": 200000,
+  "bip_allow_duplicate_positions": false,
+
   // Set to 1 for room-scale scenes, 0 for object-centric optimization.
   "isscene": 0,
 
@@ -168,8 +189,10 @@
   // Comment out this whole block when switching to another mode below.
   "occupancy_map_mode": "free_space_box",
   "occupancy_box_distribution": "uniform",
-  "occupancy_box_min": [-5, 0, 0],
-  "occupancy_box_max": [5, 1, 2],
+  // "occupancy_box_min": [-1.5, -1.5, 0],
+  // "occupancy_box_max": [1.5, 1.5, 1.5],
+  "occupancy_box_min": [-3, -3, 0],
+  "occupancy_box_max": [3, 3, 1.5],
   "occupancy_box_grid_step": 0.2,
   "show_occupancy_route": false,
   "show_occupancy_route_direction": false,
@@ -279,7 +302,7 @@
 
   // Camera placement constraint shape.
   // Volume constraints: "box", "cylinder", "dome"
-  // Surface constraints: "box_surface", "plane", "cylinder_surface", "dome_surface"
+  // Surface constraints: "box_surface", "box_walls", "plane", "cylinder_surface", "dome_surface"
 
   // box-in-the-front
   // "camera_constraint_shape": "box",
@@ -297,6 +320,12 @@
   // "camera_constraint_shape": "box_surface",
   // "camera_constraint_box_min": [-3.5, -3.5, -0.525],
   // "camera_constraint_box_max": [3.5, 3.5, 2.625],
+
+  // square room vertical walls
+  // Uses only the four vertical side walls of the axis-aligned box.
+  // "camera_constraint_shape": "box_walls",
+  // "camera_constraint_box_min": [-4.0, -4.0, -0.5],
+  // "camera_constraint_box_max": [4.0, 4.0, 2.5],
 
 
   // cylinder

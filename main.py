@@ -3,6 +3,7 @@ import json
 import os
 import shutil
 from camera_constraints import (
+    CAMERA_CONSTRAINT_SHAPES,
     apply_camera_constraint_shape_to_path,
     resolve_camera_constraint_args,
 )
@@ -12,6 +13,7 @@ from dataset.dataset import *
 from dataset.utils import configure_camera_models_from_args
 from visualization.visual_cam_points import *
 from torch.utils.tensorboard import SummaryWriter
+from bip_optimizer import BIPCameraOpt
 from optimization import CameraLayerOpt
 from field.field_attribute import voxel_model
 os.environ['PYOPENGL_PLATFORM'] = 'osmesa'
@@ -27,6 +29,33 @@ def resolve_output_dir(base_dir, relative_path):
     if os.path.commonpath([base_dir_abs, output_dir]) != base_dir_abs:
         raise ValueError(f"--path must stay inside {base_dir}/")
     return output_dir
+
+
+def apply_solver_to_path(relative_path, solver):
+    if solver in (None, "", "neof"):
+        return relative_path
+
+    normalized_relative = os.path.normpath(relative_path)
+    parent_dir, leaf_dir = os.path.split(normalized_relative)
+    if leaf_dir in ("", ".", os.sep):
+        raise ValueError("path must end with a valid directory name")
+
+    suffix = f"_{solver}"
+    for shape_name in CAMERA_CONSTRAINT_SHAPES:
+        shape_suffix = f"_{shape_name}"
+        if leaf_dir.endswith(shape_suffix):
+            leaf_base = leaf_dir[: -len(shape_suffix)]
+            if not leaf_base.endswith(suffix):
+                leaf_base = f"{leaf_base}{suffix}"
+            leaf_dir = f"{leaf_base}{shape_suffix}"
+            break
+    else:
+        if not leaf_dir.endswith(suffix):
+            leaf_dir = f"{leaf_dir}{suffix}"
+    solver_path = os.path.join(parent_dir, leaf_dir) if parent_dir else leaf_dir
+    if relative_path.endswith(os.sep):
+        return solver_path + os.sep
+    return solver_path
 
 
 if __name__ =='__main__':
@@ -47,6 +76,7 @@ if __name__ =='__main__':
     parser.add_argument('--iterations',type=int,default=20)
     parser.add_argument('--config',type=str,default=None)
     parser.add_argument('--decay',type=float,default=1e-4)
+    parser.add_argument('--solver',type=str,choices=['neof','bip'],default='neof')
     parser.add_argument('--optimizer',type=str,default="Adam")
     parser.add_argument('--kcoverage',type=int,default=3)
     parser.add_argument('--isscene',type=int,default=0)
@@ -141,7 +171,7 @@ if __name__ =='__main__':
     parser.add_argument(
         '--camera_constraint_shape',
         type=str,
-        choices=['box','box_surface','cylinder','dome','plane','cylinder_surface','dome_surface'],
+        choices=CAMERA_CONSTRAINT_SHAPES,
         default='box',
     )
     parser.add_argument('--camera_constraint_box_min',type=float,nargs=3,default=None)
@@ -156,6 +186,20 @@ if __name__ =='__main__':
     parser.add_argument('--camera_constraint_plane_span_v',type=float,nargs=3,default=None)
     parser.add_argument('--camera_init_strategy',type=str,choices=['random','grid'],default='random')
     parser.add_argument('--reset_random_samples_per_voxel',type=int,default=4)
+    parser.add_argument('--bip_candidate_position_step',type=float,default=0.5)
+    parser.add_argument('--bip_target_count',type=int,default=5)
+    parser.add_argument('--bip_max_candidate_positions',type=int,default=500)
+    parser.add_argument('--bip_max_base_candidates',type=int,default=800)
+    parser.add_argument('--bip_pair_candidate_limit',type=int,default=20)
+    parser.add_argument('--bip_min_visible_points',type=int,default=1)
+    parser.add_argument('--bip_time_limit',type=float,default=60.0)
+    parser.add_argument('--bip_coverage_mode',type=str,choices=['kcoverage','pair_angle'],default='pair_angle')
+    parser.add_argument('--bip_min_triangulation_angle_deg',type=float,default=15.0)
+    parser.add_argument('--bip_max_triangulation_angle_deg',type=float,default=165.0)
+    parser.add_argument('--bip_max_pair_variables',type=int,default=200000)
+    parser.add_argument('--bip_allow_duplicate_positions',dest='bip_allow_duplicate_positions',action='store_true')
+    parser.add_argument('--no_bip_allow_duplicate_positions',dest='bip_allow_duplicate_positions',action='store_false')
+    parser.set_defaults(bip_allow_duplicate_positions=False)
     parser.add_argument('--clear_previous_results',dest='clear_previous_results',action='store_true')
     parser.add_argument('--no_clear_previous_results',dest='clear_previous_results',action='store_false')
     parser.set_defaults(clear_previous_results=True)
@@ -182,6 +226,7 @@ if __name__ =='__main__':
     parser.add_argument('--vismode',type=str,choices=['save','interactive','none'],default='save')
     args = parse_args_with_json_config(parser)
     args = resolve_camera_constraint_args(args)
+    args.path = apply_solver_to_path(args.path, args.solver)
     args.path = apply_camera_constraint_shape_to_path(args.path, args.camera_constraint_shape)
     if args.vismode == 'none':
         print("vismode=none is treated as headless save mode; visualization files will still be written.")
@@ -252,6 +297,26 @@ if __name__ =='__main__':
         raise ValueError("sampling_quality_min_projected_voxel_px must be positive")
     if args.reset_random_samples_per_voxel < 1:
         raise ValueError("reset_random_samples_per_voxel must be at least 1")
+    if args.bip_candidate_position_step <= 0:
+        raise ValueError("bip_candidate_position_step must be positive")
+    if args.bip_target_count < 1:
+        raise ValueError("bip_target_count must be at least 1")
+    if args.bip_max_candidate_positions < 0:
+        raise ValueError("bip_max_candidate_positions must be non-negative")
+    if args.bip_max_base_candidates < 0:
+        raise ValueError("bip_max_base_candidates must be non-negative")
+    if args.bip_pair_candidate_limit < 0:
+        raise ValueError("bip_pair_candidate_limit must be non-negative")
+    if args.bip_min_visible_points < 0:
+        raise ValueError("bip_min_visible_points must be non-negative")
+    if args.bip_time_limit <= 0:
+        raise ValueError("bip_time_limit must be positive")
+    if args.bip_min_triangulation_angle_deg < 0 or args.bip_max_triangulation_angle_deg > 180:
+        raise ValueError("BIP triangulation angle limits must stay within [0, 180] degrees")
+    if args.bip_min_triangulation_angle_deg > args.bip_max_triangulation_angle_deg:
+        raise ValueError("bip_min_triangulation_angle_deg must be <= bip_max_triangulation_angle_deg")
+    if args.bip_max_pair_variables < 0:
+        raise ValueError("bip_max_pair_variables must be non-negative")
     if args.camera_vis_scale <= 0:
         raise ValueError("camera_vis_scale must be positive")
     if args.camera_optical_axis_length is not None and args.camera_optical_axis_length <= 0:
@@ -343,7 +408,12 @@ if __name__ =='__main__':
             args.occupancy_vis_volume_step,
         )
     np.savez(os.path.join(pcdpath, "geometry_data.npz"), **geometry_payload)
-    camlayopt = CameraLayerOpt(args,voxelnormals,occupancy_weights,minbound,scale,posepath,writer,geometry_metadata=geometry_metadata)
+    if args.solver == 'neof':
+        camlayopt = CameraLayerOpt(args,voxelnormals,occupancy_weights,minbound,scale,posepath,writer,geometry_metadata=geometry_metadata)
+    elif args.solver == 'bip':
+        camlayopt = BIPCameraOpt(args,voxelnormals,occupancy_weights,minbound,scale,posepath,writer,geometry_metadata=geometry_metadata)
+    else:
+        raise ValueError(f"Unsupported solver: {args.solver}")
     position=camerapose[:,:3]
     rotation=compute_rotation_matrix_from_ortho6d(camerapose[:,3:])
     initial_position_np = position.detach().cpu().numpy()

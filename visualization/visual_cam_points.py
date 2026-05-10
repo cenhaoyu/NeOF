@@ -452,7 +452,7 @@ def getDomeVis(box_min, box_max, color=None, radius=0.003, ring_points=48, merid
 def getCameraConstraintVis(camera_constraint_shape, constraint_min, constraint_max, constraint_data=None, color=None, radius=0.003):
     if camera_constraint_shape == "box":
         return getBoxVis(constraint_min, constraint_max, color=color, radius=radius)
-    if camera_constraint_shape == "box_surface":
+    if camera_constraint_shape in ("box_surface", "box_walls"):
         return getBoxVis(constraint_min, constraint_max, color=color, radius=radius)
     if camera_constraint_shape == "cylinder":
         return getCylinderVis(constraint_min, constraint_max, color=color, radius=radius)

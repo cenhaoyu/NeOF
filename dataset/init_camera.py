@@ -257,6 +257,53 @@ def choose_surface_grid_shape(cameranum, lengths):
 
 
 def build_surface_grid_points(cameranum, camera_constraint_shape, camera_constraint_min, camera_constraint_max, camera_constraint_data):
+    if camera_constraint_shape == "box_walls":
+        lengths = np.asarray(camera_constraint_max, dtype=float) - np.asarray(camera_constraint_min, dtype=float)
+        face_specs = [
+            (0, camera_constraint_min[0], 1, 2, lengths[1], lengths[2]),
+            (0, camera_constraint_max[0], 1, 2, lengths[1], lengths[2]),
+            (1, camera_constraint_min[1], 0, 2, lengths[0], lengths[2]),
+            (1, camera_constraint_max[1], 0, 2, lengths[0], lengths[2]),
+        ]
+        pair_weights = np.array(
+            [
+                lengths[1] * lengths[2],
+                lengths[0] * lengths[2],
+            ],
+            dtype=float,
+        )
+        pair_instances = allocate_weighted_integer_counts(max(cameranum // 2, 0), pair_weights)
+        pair_counts = 2 * pair_instances
+        remainder = cameranum - int(np.sum(pair_counts))
+        if remainder > 0:
+            pair_counts[int(np.argmax(pair_weights))] += remainder
+        face_counts = np.zeros(4, dtype=int)
+        for pair_index in range(2):
+            base = pair_counts[pair_index] // 2
+            face_counts[2 * pair_index] = base
+            face_counts[2 * pair_index + 1] = base
+            if pair_counts[pair_index] % 2 == 1:
+                face_counts[2 * pair_index + 1] += 1
+
+        surface_points = []
+        for face_index, (fixed_axis, fixed_value, axis_u, axis_v, length_u, length_v) in enumerate(face_specs):
+            if face_counts[face_index] <= 0:
+                continue
+            face_grid_shape = choose_surface_grid_shape(
+                int(face_counts[face_index]),
+                lengths=np.array([length_u, length_v], dtype=float),
+            )
+            values_u = build_grid_axis(camera_constraint_min[axis_u], camera_constraint_max[axis_u], int(face_grid_shape[0]))
+            values_v = build_grid_axis(camera_constraint_min[axis_v], camera_constraint_max[axis_v], int(face_grid_shape[1]))
+            for u in values_u:
+                for v in values_v:
+                    point = np.zeros(3, dtype=float)
+                    point[fixed_axis] = fixed_value
+                    point[axis_u] = u
+                    point[axis_v] = v
+                    surface_points.append(point)
+        return np.asarray(surface_points, dtype=float), f"symmetric wall grid ({len(surface_points)} points)"
+
     if camera_constraint_shape == "box_surface":
         lengths = np.asarray(camera_constraint_max, dtype=float) - np.asarray(camera_constraint_min, dtype=float)
         face_specs = [
