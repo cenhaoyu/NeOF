@@ -211,6 +211,10 @@ if __name__ =='__main__':
     parser.add_argument('--bip_min_visible_fraction',type=float,default=0.0)
     parser.add_argument('--bip_time_limit',type=float,default=60.0)
     parser.add_argument('--bip_coverage_mode',type=str,choices=['kcoverage','pair_angle'],default='pair_angle')
+    parser.add_argument('--bip_solver_backend',type=str,choices=['scipy_highs','ortools_cpsat'],default='scipy_highs')
+    parser.add_argument('--bip_cpsat_weight_scale',type=float,default=1000.0)
+    parser.add_argument('--bip_cpsat_num_workers',type=int,default=0)
+    parser.add_argument('--bip_cpsat_random_seed',type=int,default=0)
     parser.add_argument('--bip_min_triangulation_angle_deg',type=float,default=15.0)
     parser.add_argument('--bip_max_triangulation_angle_deg',type=float,default=165.0)
     parser.add_argument('--bip_max_pair_variables',type=int,default=200000)
@@ -330,6 +334,10 @@ if __name__ =='__main__':
         raise ValueError("bip_min_visible_fraction must be in [0, 1]")
     if args.bip_time_limit <= 0:
         raise ValueError("bip_time_limit must be positive")
+    if args.bip_cpsat_weight_scale <= 0:
+        raise ValueError("bip_cpsat_weight_scale must be positive")
+    if args.bip_cpsat_num_workers < 0:
+        raise ValueError("bip_cpsat_num_workers must be non-negative")
     if args.bip_min_triangulation_angle_deg < 0 or args.bip_max_triangulation_angle_deg > 180:
         raise ValueError("BIP triangulation angle limits must stay within [0, 180] degrees")
     if args.bip_min_triangulation_angle_deg > args.bip_max_triangulation_angle_deg:

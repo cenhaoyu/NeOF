@@ -8,6 +8,11 @@ import numpy as np
 from scipy import sparse
 from scipy.optimize import Bounds, LinearConstraint, milp
 
+try:
+    from ortools.sat.python import cp_model
+except ImportError:  # Optional backend; scipy_highs remains available without OR-Tools.
+    cp_model = None
+
 from camera_constraints import point_in_camera_constraint
 from dataset.init_camera import getLookAtRotation
 from dataset.utils import compute_rotation_matrix_from_ortho6d, get_camera_model, npToTensor, saveTrainingResult
@@ -283,6 +288,82 @@ def _pose_group_ids(position_groups, base_candidate_count):
     return group_ids
 
 
+def _require_cpsat():
+    if cp_model is None:
+        raise ImportError(
+            "OR-Tools CP-SAT backend requires the 'ortools' package. "
+            "Install it in neof_cam with: python -m pip install ortools"
+        )
+    return cp_model
+
+
+def _cpsat_status_name(status):
+    model = _require_cpsat()
+    names = {
+        model.OPTIMAL: "OPTIMAL",
+        model.FEASIBLE: "FEASIBLE",
+        model.INFEASIBLE: "INFEASIBLE",
+        model.MODEL_INVALID: "MODEL_INVALID",
+        model.UNKNOWN: "UNKNOWN",
+    }
+    return names.get(status, f"STATUS_{status}")
+
+
+def _integer_objective_weights(occupancy_weights, scale):
+    weights = np.asarray(occupancy_weights, dtype=float)
+    if np.any(weights < 0):
+        raise ValueError("occupancy weights must be non-negative")
+    scale = float(scale)
+    if scale <= 0:
+        raise ValueError("bip_cpsat_weight_scale must be positive")
+    integer_weights = np.rint(weights * scale).astype(np.int64)
+    positive = weights > 0
+    integer_weights[positive & (integer_weights < 1)] = 1
+    if np.any(integer_weights < 0):
+        raise ValueError("scaled CP-SAT objective weights overflowed int64")
+    if np.sum(integer_weights) <= 0:
+        raise ValueError("CP-SAT objective weights are all zero after scaling")
+    return integer_weights
+
+
+def _configure_cpsat_solver(time_limit_s, args):
+    model = _require_cpsat()
+    solver = model.CpSolver()
+    solver.parameters.max_time_in_seconds = float(time_limit_s)
+    num_workers = int(getattr(args, "bip_cpsat_num_workers", 0))
+    if num_workers > 0:
+        solver.parameters.num_search_workers = num_workers
+    solver.parameters.random_seed = int(getattr(args, "bip_cpsat_random_seed", 0))
+    return solver
+
+
+def _selected_decisions_from_cpsat(solver, x_vars, base_candidate_count, camera_count):
+    selected_pose_indices = []
+    selected_decision_indices = []
+    for slot in range(camera_count):
+        start = slot * base_candidate_count
+        stop = (slot + 1) * base_candidate_count
+        local_values = [solver.BooleanValue(x_vars[index]) for index in range(start, stop)]
+        true_indices = [index for index, value in enumerate(local_values) if value]
+        if len(true_indices) == 0:
+            raise RuntimeError(f"CP-SAT solution did not select a pose for camera slot {slot}")
+        local_index = int(true_indices[0])
+        selected_pose_indices.append(local_index)
+        selected_decision_indices.append(start + local_index)
+    return selected_pose_indices, selected_decision_indices
+
+
+def _cpsat_solution_message(status, solver):
+    model = _require_cpsat()
+    name = _cpsat_status_name(status)
+    objective = solver.ObjectiveValue()
+    bound = solver.BestObjectiveBound()
+    message = f"OR-Tools CP-SAT status: {name}; objective={objective:.0f}; best_bound={bound:.0f}"
+    if status == model.FEASIBLE:
+        message = f"{message}; using best incumbent returned by OR-Tools CP-SAT"
+    return message
+
+
 def _solve_weighted_k_coverage_bip(
     visibility,
     base_candidate_count,
@@ -401,6 +482,92 @@ def _solve_weighted_k_coverage_bip(
         weighted_coverage_rate=weighted_coverage_rate,
         success=True,
         message=message,
+        solve_time_s=solve_time_s,
+    )
+
+
+def _solve_weighted_k_coverage_cpsat(
+    visibility,
+    base_candidate_count,
+    camera_count,
+    kcoverage,
+    occupancy_weights,
+    allow_duplicate_positions,
+    time_limit_s,
+    args,
+    duplicate_pose_groups=None,
+):
+    model_api = _require_cpsat()
+    visibility = visibility.tocsr()
+    point_count, decision_count = visibility.shape
+    if decision_count != base_candidate_count * camera_count:
+        raise ValueError("decision visibility shape does not match base candidate count and camera count")
+
+    model = model_api.CpModel()
+    x_vars = [model.NewBoolVar(f"x_{index}") for index in range(decision_count)]
+    y_vars = [model.NewBoolVar(f"y_{point_index}") for point_index in range(point_count)]
+
+    for slot in range(camera_count):
+        start = slot * base_candidate_count
+        stop = (slot + 1) * base_candidate_count
+        model.Add(sum(x_vars[start:stop]) == 1)
+
+    if not allow_duplicate_positions:
+        position_groups = duplicate_pose_groups or [[pose_index] for pose_index in range(base_candidate_count)]
+        for pose_indices in position_groups:
+            group_vars = [
+                x_vars[slot * base_candidate_count + pose_index]
+                for pose_index in pose_indices
+                for slot in range(camera_count)
+            ]
+            model.Add(sum(group_vars) <= 1)
+
+    kcoverage = int(max(1, min(int(kcoverage), camera_count)))
+    for point_index in range(point_count):
+        start = visibility.indptr[point_index]
+        stop = visibility.indptr[point_index + 1]
+        decision_indices = visibility.indices[start:stop]
+        if len(decision_indices) == 0:
+            model.Add(y_vars[point_index] == 0)
+        else:
+            model.Add(sum(x_vars[int(index)] for index in decision_indices) >= kcoverage * y_vars[point_index])
+
+    objective_weights = _integer_objective_weights(
+        occupancy_weights,
+        getattr(args, "bip_cpsat_weight_scale", 1000.0),
+    )
+    model.Maximize(sum(int(weight) * y_var for weight, y_var in zip(objective_weights, y_vars)))
+
+    solver = _configure_cpsat_solver(time_limit_s, args)
+    start_time = time.time()
+    status = solver.Solve(model)
+    solve_time_s = time.time() - start_time
+    if status not in (model_api.OPTIMAL, model_api.FEASIBLE):
+        return BIPSolution([], [], 0.0, 0.0, False, f"OR-Tools CP-SAT status: {_cpsat_status_name(status)}", solve_time_s)
+
+    try:
+        selected_pose_indices, selected_decision_indices = _selected_decisions_from_cpsat(
+            solver,
+            x_vars,
+            base_candidate_count,
+            camera_count,
+        )
+    except RuntimeError as exc:
+        return BIPSolution([], [], 0.0, 0.0, False, str(exc), solve_time_s)
+
+    selected_visibility = visibility[:, selected_decision_indices]
+    covered = np.asarray(selected_visibility.sum(axis=1)).ravel() >= kcoverage
+    weights = np.asarray(occupancy_weights, dtype=float)
+    weight_sum = float(np.sum(weights))
+    weighted_coverage_rate = float(np.sum(weights[covered]) / weight_sum) if weight_sum > 1e-12 else float(np.mean(covered))
+    objective_value = float(np.sum(weights[covered]))
+    return BIPSolution(
+        selected_pose_indices=selected_pose_indices,
+        selected_decision_indices=selected_decision_indices,
+        objective_value=objective_value,
+        weighted_coverage_rate=weighted_coverage_rate,
+        success=True,
+        message=_cpsat_solution_message(status, solver),
         solve_time_s=solve_time_s,
     )
 
@@ -561,6 +728,106 @@ def _solve_weighted_pair_coverage_bip(
         weighted_coverage_rate=weighted_coverage_rate,
         success=True,
         message=message,
+        solve_time_s=solve_time_s,
+    )
+
+
+def _solve_weighted_pair_coverage_cpsat(
+    pair_visibility,
+    pair_decisions,
+    base_candidate_count,
+    camera_count,
+    occupancy_weights,
+    allow_duplicate_positions,
+    time_limit_s,
+    args,
+    duplicate_pose_groups=None,
+):
+    model_api = _require_cpsat()
+    pair_visibility = pair_visibility.tocsr()
+    point_count, pair_count = pair_visibility.shape
+    decision_count = base_candidate_count * camera_count
+    if pair_count == 0:
+        return BIPSolution([], [], 0.0, 0.0, False, "No valid BIP camera pairs are available.", 0.0)
+
+    model = model_api.CpModel()
+    x_vars = [model.NewBoolVar(f"x_{index}") for index in range(decision_count)]
+    z_vars = [model.NewBoolVar(f"z_{pair_index}") for pair_index in range(pair_count)]
+    y_vars = [model.NewBoolVar(f"y_{point_index}") for point_index in range(point_count)]
+
+    for slot in range(camera_count):
+        start = slot * base_candidate_count
+        stop = (slot + 1) * base_candidate_count
+        model.Add(sum(x_vars[start:stop]) == 1)
+
+    if not allow_duplicate_positions:
+        position_groups = duplicate_pose_groups or [[pose_index] for pose_index in range(base_candidate_count)]
+        for pose_indices in position_groups:
+            group_vars = [
+                x_vars[slot * base_candidate_count + pose_index]
+                for pose_index in pose_indices
+                for slot in range(camera_count)
+            ]
+            model.Add(sum(group_vars) <= 1)
+
+    for pair_index, (first_decision, second_decision) in enumerate(pair_decisions):
+        z_var = z_vars[pair_index]
+        model.Add(z_var <= x_vars[int(first_decision)])
+        model.Add(z_var <= x_vars[int(second_decision)])
+
+    for point_index in range(point_count):
+        start = pair_visibility.indptr[point_index]
+        stop = pair_visibility.indptr[point_index + 1]
+        pair_indices = pair_visibility.indices[start:stop]
+        if len(pair_indices) == 0:
+            model.Add(y_vars[point_index] == 0)
+        else:
+            model.Add(sum(z_vars[int(index)] for index in pair_indices) >= y_vars[point_index])
+
+    objective_weights = _integer_objective_weights(
+        occupancy_weights,
+        getattr(args, "bip_cpsat_weight_scale", 1000.0),
+    )
+    model.Maximize(sum(int(weight) * y_var for weight, y_var in zip(objective_weights, y_vars)))
+
+    solver = _configure_cpsat_solver(time_limit_s, args)
+    start_time = time.time()
+    status = solver.Solve(model)
+    solve_time_s = time.time() - start_time
+    if status not in (model_api.OPTIMAL, model_api.FEASIBLE):
+        return BIPSolution([], [], 0.0, 0.0, False, f"OR-Tools CP-SAT status: {_cpsat_status_name(status)}", solve_time_s)
+
+    try:
+        selected_pose_indices, selected_decision_indices = _selected_decisions_from_cpsat(
+            solver,
+            x_vars,
+            base_candidate_count,
+            camera_count,
+        )
+    except RuntimeError as exc:
+        return BIPSolution([], [], 0.0, 0.0, False, str(exc), solve_time_s)
+
+    selected = set(selected_decision_indices)
+    active_pair_indices = [
+        pair_index
+        for pair_index, (first_decision, second_decision) in enumerate(pair_decisions)
+        if first_decision in selected and second_decision in selected
+    ]
+    if active_pair_indices:
+        covered = np.asarray(pair_visibility[:, active_pair_indices].sum(axis=1)).ravel() > 0
+    else:
+        covered = np.zeros(point_count, dtype=bool)
+    weights = np.asarray(occupancy_weights, dtype=float)
+    weight_sum = float(np.sum(weights))
+    weighted_coverage_rate = float(np.sum(weights[covered]) / weight_sum) if weight_sum > 1e-12 else float(np.mean(covered))
+    objective_value = float(np.sum(weights[covered]))
+    return BIPSolution(
+        selected_pose_indices=selected_pose_indices,
+        selected_decision_indices=selected_decision_indices,
+        objective_value=objective_value,
+        weighted_coverage_rate=weighted_coverage_rate,
+        success=True,
+        message=_cpsat_solution_message(status, solver),
         solve_time_s=solve_time_s,
     )
 
@@ -972,6 +1239,10 @@ class BIPCameraOpt:
             "bip_min_visible_fraction": float(getattr(self.args, "bip_min_visible_fraction", 0.0)),
             "bip_time_limit": float(self.args.bip_time_limit),
             "bip_coverage_mode": self.args.bip_coverage_mode,
+            "bip_solver_backend": getattr(self.args, "bip_solver_backend", "scipy_highs"),
+            "bip_cpsat_weight_scale": float(getattr(self.args, "bip_cpsat_weight_scale", 1000.0)),
+            "bip_cpsat_num_workers": int(getattr(self.args, "bip_cpsat_num_workers", 0)),
+            "bip_cpsat_random_seed": int(getattr(self.args, "bip_cpsat_random_seed", 0)),
             "bip_min_triangulation_angle_deg": float(self.args.bip_min_triangulation_angle_deg),
             "bip_max_triangulation_angle_deg": float(self.args.bip_max_triangulation_angle_deg),
             "bip_allow_duplicate_positions": bool(self.args.bip_allow_duplicate_positions),
@@ -1046,18 +1317,34 @@ class BIPCameraOpt:
             f"max={int(np.max(visible_counts))}"
         )
 
-        print(f"BIP solve | mode={self.args.bip_coverage_mode}")
+        solver_backend = getattr(self.args, "bip_solver_backend", "scipy_highs")
+        print(f"BIP solve | mode={self.args.bip_coverage_mode} | backend={solver_backend}")
         if self.args.bip_coverage_mode == "kcoverage":
-            solution = _solve_weighted_k_coverage_bip(
-                decision_visibility,
-                base_candidate_count=len(candidates),
-                camera_count=self.args.cameranum,
-                kcoverage=self.args.kcoverage,
-                occupancy_weights=self.voxel_occupancy_np,
-                allow_duplicate_positions=self.args.bip_allow_duplicate_positions,
-                time_limit_s=self.args.bip_time_limit,
-                duplicate_pose_groups=duplicate_pose_groups,
-            )
+            if solver_backend == "scipy_highs":
+                solution = _solve_weighted_k_coverage_bip(
+                    decision_visibility,
+                    base_candidate_count=len(candidates),
+                    camera_count=self.args.cameranum,
+                    kcoverage=self.args.kcoverage,
+                    occupancy_weights=self.voxel_occupancy_np,
+                    allow_duplicate_positions=self.args.bip_allow_duplicate_positions,
+                    time_limit_s=self.args.bip_time_limit,
+                    duplicate_pose_groups=duplicate_pose_groups,
+                )
+            elif solver_backend == "ortools_cpsat":
+                solution = _solve_weighted_k_coverage_cpsat(
+                    decision_visibility,
+                    base_candidate_count=len(candidates),
+                    camera_count=self.args.cameranum,
+                    kcoverage=self.args.kcoverage,
+                    occupancy_weights=self.voxel_occupancy_np,
+                    allow_duplicate_positions=self.args.bip_allow_duplicate_positions,
+                    time_limit_s=self.args.bip_time_limit,
+                    args=self.args,
+                    duplicate_pose_groups=duplicate_pose_groups,
+                )
+            else:
+                raise ValueError(f"Unsupported BIP solver backend: {solver_backend}")
         elif self.args.bip_coverage_mode == "pair_angle":
             pair_start = time.time()
             pair_visibility, pair_decisions = self.build_pair_visibility(candidates, decision_visibility)
@@ -1065,16 +1352,31 @@ class BIPCameraOpt:
                 f"  Built pair-angle visibility matrix {pair_visibility.shape} "
                 f"with {pair_visibility.nnz} nonzeros in {format_seconds(time.time() - pair_start)}"
             )
-            solution = _solve_weighted_pair_coverage_bip(
-                pair_visibility,
-                pair_decisions,
-                base_candidate_count=len(candidates),
-                camera_count=self.args.cameranum,
-                occupancy_weights=self.voxel_occupancy_np,
-                allow_duplicate_positions=self.args.bip_allow_duplicate_positions,
-                time_limit_s=self.args.bip_time_limit,
-                duplicate_pose_groups=duplicate_pose_groups,
-            )
+            if solver_backend == "scipy_highs":
+                solution = _solve_weighted_pair_coverage_bip(
+                    pair_visibility,
+                    pair_decisions,
+                    base_candidate_count=len(candidates),
+                    camera_count=self.args.cameranum,
+                    occupancy_weights=self.voxel_occupancy_np,
+                    allow_duplicate_positions=self.args.bip_allow_duplicate_positions,
+                    time_limit_s=self.args.bip_time_limit,
+                    duplicate_pose_groups=duplicate_pose_groups,
+                )
+            elif solver_backend == "ortools_cpsat":
+                solution = _solve_weighted_pair_coverage_cpsat(
+                    pair_visibility,
+                    pair_decisions,
+                    base_candidate_count=len(candidates),
+                    camera_count=self.args.cameranum,
+                    occupancy_weights=self.voxel_occupancy_np,
+                    allow_duplicate_positions=self.args.bip_allow_duplicate_positions,
+                    time_limit_s=self.args.bip_time_limit,
+                    args=self.args,
+                    duplicate_pose_groups=duplicate_pose_groups,
+                )
+            else:
+                raise ValueError(f"Unsupported BIP solver backend: {solver_backend}")
             if not solution.success:
                 print(f"  Pair-angle BIP failed ({solution.message}); falling back to greedy pair selection.")
                 solution = _greedy_weighted_pair_coverage(

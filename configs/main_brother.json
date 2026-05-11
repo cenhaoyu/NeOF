@@ -92,8 +92,12 @@
   // kcoverage is the paper-style objective: a support point is covered when
   // it is seen by at least kcoverage selected cameras.
   "bip_coverage_mode": "pair_angle",
+  "bip_solver_backend": "ortools_cpsat",
+  "bip_cpsat_weight_scale": 1000,
+  "bip_cpsat_num_workers": 0,
+  "bip_cpsat_random_seed": 0,
   "bip_candidate_position_step": 0.5,
-  "bip_target_count": 50,
+  "bip_target_count": 10,
   "bip_max_candidate_positions": 500,
   "bip_max_base_candidates": 2500,
   // Paper-style preprocessing: remove candidate poses that see too few support points.
@@ -105,7 +109,7 @@
   "bip_allow_duplicate_positions": false,
 
   // Pair-angle-only settings.
-  "bip_pair_candidate_limit": 20,
+  "bip_pair_candidate_limit": 30,
   "bip_min_triangulation_angle_deg": 15.0,
   "bip_max_triangulation_angle_deg": 165.0,
   "bip_max_pair_variables": 200000,

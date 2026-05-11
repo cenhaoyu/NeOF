@@ -1,7 +1,9 @@
 argparse
-numpy
+numpy==1.26.4
 itertools
 open3d
 matplotlib
 scipy
+ortools==9.10.4067
+fsspec
 time
