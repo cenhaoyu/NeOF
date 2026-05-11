@@ -955,7 +955,7 @@ def main():
         choices=CAMERA_CONSTRAINT_SHAPES,
         default=None,
     )
-    parser.add_argument("--modelname", type=str, required=True)
+    parser.add_argument("--modelname", type=str, default=None)
     parser.add_argument("--camera_models", type=json.loads, default=None)
     parser.add_argument("--image_width", type=int, default=640)
     parser.add_argument("--image_height", type=int, default=480)
@@ -1015,6 +1015,8 @@ def main():
     parser.add_argument("--optimized_pose", type=str, default=None)
     parser.add_argument("--output_json", type=str, default=None)
     args = parse_args_with_json_config(parser, allow_unknown_config_keys=True)
+    if args.modelname is None:
+        raise ValueError("--modelname must be provided either on the command line or in the JSON config")
     args.path = apply_solver_to_path(args.path, args.solver)
     if args.camera_constraint_shape is not None:
         args.path = apply_camera_constraint_shape_to_path(args.path, args.camera_constraint_shape)

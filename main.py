@@ -2,6 +2,7 @@ import argparse
 import json
 import os
 import shutil
+import time
 from camera_constraints import (
     CAMERA_CONSTRAINT_SHAPES,
     apply_camera_constraint_shape_to_path,
@@ -29,6 +30,17 @@ def resolve_output_dir(base_dir, relative_path):
     if os.path.commonpath([base_dir_abs, output_dir]) != base_dir_abs:
         raise ValueError(f"--path must stay inside {base_dir}/")
     return output_dir
+
+
+def format_runtime(seconds):
+    seconds = float(seconds)
+    if seconds < 60.0:
+        return f"{seconds:.2f}s"
+    minutes, rem_seconds = divmod(seconds, 60.0)
+    if minutes < 60.0:
+        return f"{int(minutes)}m {rem_seconds:.2f}s"
+    hours, rem_minutes = divmod(minutes, 60.0)
+    return f"{int(hours)}h {int(rem_minutes)}m {rem_seconds:.2f}s"
 
 
 def apply_solver_to_path(relative_path, solver):
@@ -498,7 +510,15 @@ if __name__ =='__main__':
             **camera_vis_kwargs,
         )
     #############################################################################
+    print(f"Optimization timing started | solver={args.solver}")
+    optimization_start_time = time.perf_counter()
     position,rotation = camlayopt.opt(camerapose)
+    optimization_elapsed_s = time.perf_counter() - optimization_start_time
+    print(
+        "Optimization timing finished | "
+        f"solver={args.solver} | elapsed={format_runtime(optimization_elapsed_s)} "
+        f"({optimization_elapsed_s:.3f}s)"
+    )
     optimized_position_np = np.asarray(position, dtype=float)
     optimized_rotation_np = np.asarray(rotation, dtype=float)
     if args.vismode == 'interactive':
