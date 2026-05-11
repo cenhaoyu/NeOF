@@ -264,6 +264,25 @@ def _build_pose_candidates(args, voxelnormals, occupancy_weights):
     return candidates
 
 
+def _candidate_position_groups(candidates, decimals=6):
+    groups = {}
+    for pose_index, candidate in enumerate(candidates):
+        key = tuple(np.round(np.asarray(candidate.position, dtype=float), decimals))
+        groups.setdefault(key, []).append(pose_index)
+    return list(groups.values())
+
+
+def _pose_group_ids(position_groups, base_candidate_count):
+    group_ids = np.full(base_candidate_count, -1, dtype=int)
+    for group_id, pose_indices in enumerate(position_groups):
+        for pose_index in pose_indices:
+            group_ids[int(pose_index)] = group_id
+    missing = np.where(group_ids < 0)[0]
+    if len(missing) > 0:
+        raise ValueError(f"Missing candidate position groups for pose indices: {missing.tolist()}")
+    return group_ids
+
+
 def _solve_weighted_k_coverage_bip(
     visibility,
     base_candidate_count,
@@ -272,6 +291,7 @@ def _solve_weighted_k_coverage_bip(
     occupancy_weights,
     allow_duplicate_positions,
     time_limit_s,
+    duplicate_pose_groups=None,
 ):
     visibility = visibility.tocsr().astype(float)
     point_count, decision_count = visibility.shape
@@ -303,27 +323,29 @@ def _solve_weighted_k_coverage_bip(
     lower_bounds.extend([1.0] * camera_count)
     upper_bounds.extend([1.0] * camera_count)
 
-    if not allow_duplicate_positions and base_candidate_count >= camera_count:
+    if not allow_duplicate_positions:
+        position_groups = duplicate_pose_groups or [[pose_index] for pose_index in range(base_candidate_count)]
         duplicate_rows = []
         duplicate_cols = []
         duplicate_data = []
-        for pose_index in range(base_candidate_count):
-            for slot in range(camera_count):
-                duplicate_rows.append(pose_index)
-                duplicate_cols.append(slot * base_candidate_count + pose_index)
-                duplicate_data.append(1.0)
+        for group_index, pose_indices in enumerate(position_groups):
+            for pose_index in pose_indices:
+                for slot in range(camera_count):
+                    duplicate_rows.append(group_index)
+                    duplicate_cols.append(slot * base_candidate_count + pose_index)
+                    duplicate_data.append(1.0)
         duplicate_matrix_x = sparse.csr_matrix(
             (duplicate_data, (duplicate_rows, duplicate_cols)),
-            shape=(base_candidate_count, decision_count),
+            shape=(len(position_groups), decision_count),
         )
         blocks.append(
             sparse.hstack(
-                [duplicate_matrix_x, sparse.csr_matrix((base_candidate_count, point_count))],
+                [duplicate_matrix_x, sparse.csr_matrix((len(position_groups), point_count))],
                 format="csr",
             )
         )
-        lower_bounds.extend([-np.inf] * base_candidate_count)
-        upper_bounds.extend([1.0] * base_candidate_count)
+        lower_bounds.extend([-np.inf] * len(position_groups))
+        upper_bounds.extend([1.0] * len(position_groups))
 
     kcoverage = int(max(1, min(int(kcoverage), camera_count)))
     coverage_matrix = sparse.hstack(
@@ -391,6 +413,7 @@ def _solve_weighted_pair_coverage_bip(
     occupancy_weights,
     allow_duplicate_positions,
     time_limit_s,
+    duplicate_pose_groups=None,
 ):
     pair_visibility = pair_visibility.tocsr().astype(float)
     point_count, pair_count = pair_visibility.shape
@@ -431,27 +454,29 @@ def _solve_weighted_pair_coverage_bip(
     lower_bounds.extend([1.0] * camera_count)
     upper_bounds.extend([1.0] * camera_count)
 
-    if not allow_duplicate_positions and base_candidate_count >= camera_count:
+    if not allow_duplicate_positions:
+        position_groups = duplicate_pose_groups or [[pose_index] for pose_index in range(base_candidate_count)]
         duplicate_rows = []
         duplicate_cols = []
         duplicate_data = []
-        for pose_index in range(base_candidate_count):
-            for slot in range(camera_count):
-                duplicate_rows.append(pose_index)
-                duplicate_cols.append(slot * base_candidate_count + pose_index)
-                duplicate_data.append(1.0)
+        for group_index, pose_indices in enumerate(position_groups):
+            for pose_index in pose_indices:
+                for slot in range(camera_count):
+                    duplicate_rows.append(group_index)
+                    duplicate_cols.append(slot * base_candidate_count + pose_index)
+                    duplicate_data.append(1.0)
         duplicate_matrix_x = sparse.csr_matrix(
             (duplicate_data, (duplicate_rows, duplicate_cols)),
-            shape=(base_candidate_count, decision_count),
+            shape=(len(position_groups), decision_count),
         )
         blocks.append(
             sparse.hstack(
-                [duplicate_matrix_x, sparse.csr_matrix((base_candidate_count, pair_count + point_count))],
+                [duplicate_matrix_x, sparse.csr_matrix((len(position_groups), pair_count + point_count))],
                 format="csr",
             )
         )
-        lower_bounds.extend([-np.inf] * base_candidate_count)
-        upper_bounds.extend([1.0] * base_candidate_count)
+        lower_bounds.extend([-np.inf] * len(position_groups))
+        upper_bounds.extend([1.0] * len(position_groups))
 
     link_rows = []
     link_cols = []
@@ -548,11 +573,14 @@ def _greedy_weighted_pair_coverage(
     occupancy_weights,
     allow_duplicate_positions,
     message_prefix,
+    duplicate_pose_groups=None,
 ):
     pair_visibility = pair_visibility.tocsr().astype(float)
     weights = np.asarray(occupancy_weights, dtype=float)
     weight_sum = float(np.sum(weights))
     decision_count = base_candidate_count * camera_count
+    position_groups = duplicate_pose_groups or [[pose_index] for pose_index in range(base_candidate_count)]
+    pose_group_ids = _pose_group_ids(position_groups, base_candidate_count)
     pair_by_decision = [[] for _ in range(decision_count)]
     for pair_index, (first_decision, second_decision) in enumerate(pair_decisions):
         pair_by_decision[first_decision].append(pair_index)
@@ -575,12 +603,13 @@ def _greedy_weighted_pair_coverage(
         return float(np.sum(weights[covered])), covered
 
     selected_decisions = [None] * camera_count
-    used_pose_indices = set()
+    used_position_groups = set()
     for slot in range(camera_count):
         best_decision = None
         best_score = -np.inf
         for pose_index in range(base_candidate_count):
-            if not allow_duplicate_positions and pose_index in used_pose_indices:
+            pose_group_id = int(pose_group_ids[pose_index])
+            if not allow_duplicate_positions and pose_group_id in used_position_groups:
                 continue
             decision = slot * base_candidate_count + pose_index
             trial = list(selected_decisions)
@@ -596,7 +625,7 @@ def _greedy_weighted_pair_coverage(
         if best_decision is None:
             return BIPSolution([], [], 0.0, 0.0, False, "Greedy pair fallback failed.", 0.0)
         selected_decisions[slot] = best_decision
-        used_pose_indices.add(best_decision % base_candidate_count)
+        used_position_groups.add(int(pose_group_ids[best_decision % base_candidate_count]))
 
     best_pair_indices = active_pair_indices(selected_decisions)
     best_score, covered = weighted_coverage(best_pair_indices)
@@ -611,11 +640,11 @@ def _greedy_weighted_pair_coverage(
                     continue
                 if not allow_duplicate_positions:
                     other_used = {
-                        decision % base_candidate_count
+                        int(pose_group_ids[decision % base_candidate_count])
                         for index, decision in enumerate(selected_decisions)
                         if index != slot and decision is not None
                     }
-                    if pose_index in other_used:
+                    if int(pose_group_ids[pose_index]) in other_used:
                         continue
                 trial = list(selected_decisions)
                 trial[slot] = slot * base_candidate_count + pose_index
@@ -662,6 +691,7 @@ class BIPCameraOpt:
         self.scale = scale
         self.posepath = posepath
         self.free_space_support = uses_free_space_support(args)
+        self.preprocessing_summary = {}
 
     def coverage_gap_from_visibility(self, voxel_visibility, weighted=True):
         coverage = np.sum(voxel_visibility, axis=-1)
@@ -730,25 +760,90 @@ class BIPCameraOpt:
         return visibility, visible_counts
 
     def filter_candidates_by_visibility(self, candidates, visibility, visible_counts):
+        preprocess_enable = bool(getattr(self.args, "bip_preprocess_enable", True))
         min_visible = int(getattr(self.args, "bip_min_visible_points", 0))
-        if min_visible <= 0 or len(candidates) == 0:
+        min_fraction = float(getattr(self.args, "bip_min_visible_fraction", 0.0))
+        fraction_threshold = int(math.ceil(min_fraction * len(self.voxelnormals))) if min_fraction > 0 else 0
+        threshold = max(min_visible, fraction_threshold)
+        score_mode = getattr(self.args, "bip_visibility_filter_stat", "max")
+        self.preprocessing_summary = {
+            "enabled": bool(preprocess_enable),
+            "input_candidate_count": int(len(candidates)),
+            "min_visible_points": int(min_visible),
+            "min_visible_fraction": float(min_fraction),
+            "effective_min_visible_points": int(threshold),
+            "visibility_filter_stat": score_mode,
+        }
+        if not preprocess_enable or threshold <= 0 or len(candidates) == 0:
+            self.preprocessing_summary.update(
+                {
+                    "output_candidate_count": int(len(candidates)),
+                    "removed_candidate_count": 0,
+                    "skipped": bool(not preprocess_enable or threshold <= 0),
+                }
+            )
             return candidates, visibility, visible_counts
 
-        keep_mask = np.max(visible_counts, axis=0) >= min_visible
+        if score_mode == "mean":
+            candidate_scores = np.mean(visible_counts, axis=0)
+        elif score_mode == "min":
+            candidate_scores = np.min(visible_counts, axis=0)
+        else:
+            candidate_scores = np.max(visible_counts, axis=0)
+
+        keep_mask = candidate_scores >= threshold
+        removed_count = int(len(candidates) - np.sum(keep_mask))
+        self.preprocessing_summary.update(
+            {
+                "score_min": float(np.min(candidate_scores)) if len(candidate_scores) else 0.0,
+                "score_median": float(np.median(candidate_scores)) if len(candidate_scores) else 0.0,
+                "score_max": float(np.max(candidate_scores)) if len(candidate_scores) else 0.0,
+                "removed_candidate_count": removed_count,
+            }
+        )
         if int(np.sum(keep_mask)) < self.args.cameranum:
             print(
-                "BIP candidate visibility filter skipped because it would leave fewer candidates "
+                "BIP preprocessing visibility filter skipped because it would leave fewer candidates "
                 f"than cameras ({int(np.sum(keep_mask))} < {self.args.cameranum})."
+            )
+            self.preprocessing_summary.update(
+                {
+                    "output_candidate_count": int(len(candidates)),
+                    "removed_candidate_count": 0,
+                    "skipped": True,
+                    "skip_reason": "fewer_candidates_than_cameras",
+                }
             )
             return candidates, visibility, visible_counts
 
         if np.all(keep_mask):
+            print(
+                "BIP preprocessing visibility filter kept all "
+                f"{len(candidates)} candidates | stat={score_mode}, threshold={threshold}, "
+                f"score range=[{self.preprocessing_summary['score_min']:.1f}, "
+                f"{self.preprocessing_summary['score_max']:.1f}]"
+            )
+            self.preprocessing_summary.update(
+                {
+                    "output_candidate_count": int(len(candidates)),
+                    "removed_candidate_count": 0,
+                    "skipped": False,
+                }
+            )
             return candidates, visibility, visible_counts
 
         filtered_candidates = [candidate for candidate, keep in zip(candidates, keep_mask) if keep]
         print(
-            f"BIP candidate visibility filter kept {len(filtered_candidates)}/{len(candidates)} "
-            f"base poses with at least {min_visible} visible support points."
+            f"BIP preprocessing visibility filter kept {len(filtered_candidates)}/{len(candidates)} "
+            f"base poses | stat={score_mode}, threshold={threshold}, "
+            f"removed={removed_count}"
+        )
+        self.preprocessing_summary.update(
+            {
+                "output_candidate_count": int(len(filtered_candidates)),
+                "removed_candidate_count": removed_count,
+                "skipped": False,
+            }
         )
         filtered_visibility, filtered_counts = self.build_decision_visibility(filtered_candidates)
         return filtered_candidates, filtered_visibility, filtered_counts
@@ -774,6 +869,8 @@ class BIPCameraOpt:
 
     def build_pair_visibility(self, candidates, decision_visibility):
         base_candidate_count = len(candidates)
+        position_groups = _candidate_position_groups(candidates)
+        pose_group_ids = _pose_group_ids(position_groups, base_candidate_count)
         possible_pairs = (
             self.args.cameranum
             * (self.args.cameranum - 1)
@@ -804,7 +901,10 @@ class BIPCameraOpt:
                     first_visible = visibility_dense[:, first_decision]
                     first_position = candidates[first_pose].position
                     for second_pose in range(base_candidate_count):
-                        if not self.args.bip_allow_duplicate_positions and first_pose == second_pose:
+                        if (
+                            not self.args.bip_allow_duplicate_positions
+                            and pose_group_ids[first_pose] == pose_group_ids[second_pose]
+                        ):
                             continue
                         second_decision = second_slot * base_candidate_count + second_pose
                         common = np.flatnonzero(first_visible & visibility_dense[:, second_decision])
@@ -866,12 +966,16 @@ class BIPCameraOpt:
             "bip_candidate_position_step": float(self.args.bip_candidate_position_step),
             "bip_target_count": int(self.args.bip_target_count),
             "bip_pair_candidate_limit": int(self.args.bip_pair_candidate_limit),
+            "bip_preprocess_enable": bool(getattr(self.args, "bip_preprocess_enable", True)),
+            "bip_visibility_filter_stat": getattr(self.args, "bip_visibility_filter_stat", "max"),
             "bip_min_visible_points": int(self.args.bip_min_visible_points),
+            "bip_min_visible_fraction": float(getattr(self.args, "bip_min_visible_fraction", 0.0)),
             "bip_time_limit": float(self.args.bip_time_limit),
             "bip_coverage_mode": self.args.bip_coverage_mode,
             "bip_min_triangulation_angle_deg": float(self.args.bip_min_triangulation_angle_deg),
             "bip_max_triangulation_angle_deg": float(self.args.bip_max_triangulation_angle_deg),
             "bip_allow_duplicate_positions": bool(self.args.bip_allow_duplicate_positions),
+            "preprocessing": self.preprocessing_summary,
         }
         with open(os.path.join(self.posepath, "bip_solution.json"), "w", encoding="utf-8") as handle:
             json.dump(payload, handle, indent=2)
@@ -901,10 +1005,36 @@ class BIPCameraOpt:
             decision_visibility,
             visible_counts,
         )
+        duplicate_pose_groups = _candidate_position_groups(candidates)
+        if (
+            not self.args.bip_allow_duplicate_positions
+            and len(duplicate_pose_groups) < self.args.cameranum
+        ):
+            raise ValueError(
+                "BIP generated fewer unique candidate positions than cameras. Increase candidate density, "
+                "increase bip_target_count, or set bip_allow_duplicate_positions=true."
+            )
+        print(
+            "  Candidate position groups: "
+            f"{len(duplicate_pose_groups)} unique positions for {len(candidates)} pose candidates"
+        )
         reduced_candidates, _ = self.reduce_pair_angle_candidates(candidates, visible_counts)
         if reduced_candidates is not candidates:
             candidates = reduced_candidates
             decision_visibility, visible_counts = self.build_decision_visibility(candidates)
+            duplicate_pose_groups = _candidate_position_groups(candidates)
+            if (
+                not self.args.bip_allow_duplicate_positions
+                and len(duplicate_pose_groups) < self.args.cameranum
+            ):
+                raise ValueError(
+                    "BIP pair-angle candidate reduction left fewer unique positions than cameras. "
+                    "Increase bip_pair_candidate_limit or set bip_allow_duplicate_positions=true."
+                )
+            print(
+                "  Candidate position groups after pair reduction: "
+                f"{len(duplicate_pose_groups)} unique positions for {len(candidates)} pose candidates"
+            )
         print(
             f"  Built sparse decision visibility matrix {decision_visibility.shape} "
             f"with {decision_visibility.nnz} nonzeros in {format_seconds(time.time() - visibility_start)}"
@@ -926,6 +1056,7 @@ class BIPCameraOpt:
                 occupancy_weights=self.voxel_occupancy_np,
                 allow_duplicate_positions=self.args.bip_allow_duplicate_positions,
                 time_limit_s=self.args.bip_time_limit,
+                duplicate_pose_groups=duplicate_pose_groups,
             )
         elif self.args.bip_coverage_mode == "pair_angle":
             pair_start = time.time()
@@ -942,6 +1073,7 @@ class BIPCameraOpt:
                 occupancy_weights=self.voxel_occupancy_np,
                 allow_duplicate_positions=self.args.bip_allow_duplicate_positions,
                 time_limit_s=self.args.bip_time_limit,
+                duplicate_pose_groups=duplicate_pose_groups,
             )
             if not solution.success:
                 print(f"  Pair-angle BIP failed ({solution.message}); falling back to greedy pair selection.")
@@ -953,6 +1085,7 @@ class BIPCameraOpt:
                     occupancy_weights=self.voxel_occupancy_np,
                     allow_duplicate_positions=self.args.bip_allow_duplicate_positions,
                     message_prefix=solution.message,
+                    duplicate_pose_groups=duplicate_pose_groups,
                 )
         else:
             raise ValueError(f"Unsupported BIP coverage mode: {self.args.bip_coverage_mode}")

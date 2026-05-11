@@ -80,29 +80,35 @@
   // Optimizer used for camera pose refinement. Supported: "Adam", "SGD".
   "optimizer": "Adam",
 
-  // Target K-coverage value in the paper's coverage term.
-  "kcoverage": 3,
+  // K-coverage settings. Uncomment when using NeOF or bip_coverage_mode="kcoverage".
+  // "kcoverage": 2,
 
   // Solver selector. Use "neof" for the neural observation field solver,
   // or override with "--solver bip" to run the BIP solver on the same input data.
   "solver": "neof",
 
   // BIP solver settings. These are active only when solver="bip".
-  // pair_angle is the default BIP objective: a support point is covered when
-  // a selected camera pair observes it with a valid triangulation angle.
-  // kcoverage is kept as an optional ablation matching the NeOF K-coverage term.
+  // pair_angle is an angle-aware BIP objective that explicitly enumerates camera pairs.
+  // kcoverage is the paper-style objective: a support point is covered when
+  // it is seen by at least kcoverage selected cameras.
   "bip_coverage_mode": "pair_angle",
   "bip_candidate_position_step": 0.5,
-  "bip_target_count": 5,
+  "bip_target_count": 50,
   "bip_max_candidate_positions": 500,
   "bip_max_base_candidates": 2500,
-  "bip_pair_candidate_limit": 100,
+  // Paper-style preprocessing: remove candidate poses that see too few support points.
+  "bip_preprocess_enable": true,
+  "bip_visibility_filter_stat": "mean",
   "bip_min_visible_points": 1,
+  "bip_min_visible_fraction": 0.1,
   "bip_time_limit": 3600,
+  "bip_allow_duplicate_positions": false,
+
+  // Pair-angle-only settings.
+  "bip_pair_candidate_limit": 20,
   "bip_min_triangulation_angle_deg": 15.0,
   "bip_max_triangulation_angle_deg": 165.0,
   "bip_max_pair_variables": 200000,
-  "bip_allow_duplicate_positions": false,
 
   // Set to 1 for room-scale scenes, 0 for object-centric optimization.
   "isscene": 0,

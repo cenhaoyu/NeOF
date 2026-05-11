@@ -203,7 +203,12 @@ if __name__ =='__main__':
     parser.add_argument('--bip_max_candidate_positions',type=int,default=500)
     parser.add_argument('--bip_max_base_candidates',type=int,default=800)
     parser.add_argument('--bip_pair_candidate_limit',type=int,default=20)
+    parser.add_argument('--bip_preprocess_enable',dest='bip_preprocess_enable',action='store_true')
+    parser.add_argument('--no_bip_preprocess_enable',dest='bip_preprocess_enable',action='store_false')
+    parser.set_defaults(bip_preprocess_enable=True)
+    parser.add_argument('--bip_visibility_filter_stat',type=str,choices=['max','mean','min'],default='max')
     parser.add_argument('--bip_min_visible_points',type=int,default=1)
+    parser.add_argument('--bip_min_visible_fraction',type=float,default=0.0)
     parser.add_argument('--bip_time_limit',type=float,default=60.0)
     parser.add_argument('--bip_coverage_mode',type=str,choices=['kcoverage','pair_angle'],default='pair_angle')
     parser.add_argument('--bip_min_triangulation_angle_deg',type=float,default=15.0)
@@ -321,6 +326,8 @@ if __name__ =='__main__':
         raise ValueError("bip_pair_candidate_limit must be non-negative")
     if args.bip_min_visible_points < 0:
         raise ValueError("bip_min_visible_points must be non-negative")
+    if args.bip_min_visible_fraction < 0 or args.bip_min_visible_fraction > 1:
+        raise ValueError("bip_min_visible_fraction must be in [0, 1]")
     if args.bip_time_limit <= 0:
         raise ValueError("bip_time_limit must be positive")
     if args.bip_min_triangulation_angle_deg < 0 or args.bip_max_triangulation_angle_deg > 180:
