@@ -384,6 +384,7 @@
 
 
   // Remove the previous resultModel/<path> directory before starting a new run.
+  "timestamp_output": true,
   "clear_previous_results": true,
 
   // Visualization mode: save images, open an interactive window, or disable visualization.

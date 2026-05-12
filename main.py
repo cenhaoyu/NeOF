@@ -5,7 +5,6 @@ import shutil
 import time
 from camera_constraints import (
     CAMERA_CONSTRAINT_SHAPES,
-    apply_camera_constraint_shape_to_path,
     resolve_camera_constraint_args,
 )
 from config_utils import parse_args_with_json_config
@@ -17,6 +16,7 @@ from torch.utils.tensorboard import SummaryWriter
 from bip_optimizer import BIPCameraOpt
 from optimization import CameraLayerOpt
 from field.field_attribute import voxel_model
+from run_paths import apply_run_naming_to_path
 os.environ['PYOPENGL_PLATFORM'] = 'osmesa'
 
 
@@ -41,33 +41,6 @@ def format_runtime(seconds):
         return f"{int(minutes)}m {rem_seconds:.2f}s"
     hours, rem_minutes = divmod(minutes, 60.0)
     return f"{int(hours)}h {int(rem_minutes)}m {rem_seconds:.2f}s"
-
-
-def apply_solver_to_path(relative_path, solver):
-    if solver in (None, "", "neof"):
-        return relative_path
-
-    normalized_relative = os.path.normpath(relative_path)
-    parent_dir, leaf_dir = os.path.split(normalized_relative)
-    if leaf_dir in ("", ".", os.sep):
-        raise ValueError("path must end with a valid directory name")
-
-    suffix = f"_{solver}"
-    for shape_name in CAMERA_CONSTRAINT_SHAPES:
-        shape_suffix = f"_{shape_name}"
-        if leaf_dir.endswith(shape_suffix):
-            leaf_base = leaf_dir[: -len(shape_suffix)]
-            if not leaf_base.endswith(suffix):
-                leaf_base = f"{leaf_base}{suffix}"
-            leaf_dir = f"{leaf_base}{shape_suffix}"
-            break
-    else:
-        if not leaf_dir.endswith(suffix):
-            leaf_dir = f"{leaf_dir}{suffix}"
-    solver_path = os.path.join(parent_dir, leaf_dir) if parent_dir else leaf_dir
-    if relative_path.endswith(os.sep):
-        return solver_path + os.sep
-    return solver_path
 
 
 if __name__ =='__main__':
@@ -221,6 +194,10 @@ if __name__ =='__main__':
     parser.add_argument('--bip_allow_duplicate_positions',dest='bip_allow_duplicate_positions',action='store_true')
     parser.add_argument('--no_bip_allow_duplicate_positions',dest='bip_allow_duplicate_positions',action='store_false')
     parser.set_defaults(bip_allow_duplicate_positions=False)
+    parser.add_argument('--timestamp_output',dest='timestamp_output',action='store_true')
+    parser.add_argument('--no_timestamp_output',dest='timestamp_output',action='store_false')
+    parser.set_defaults(timestamp_output=True)
+    parser.add_argument('--run_timestamp',type=str,default=None)
     parser.add_argument('--clear_previous_results',dest='clear_previous_results',action='store_true')
     parser.add_argument('--no_clear_previous_results',dest='clear_previous_results',action='store_false')
     parser.set_defaults(clear_previous_results=True)
@@ -247,8 +224,14 @@ if __name__ =='__main__':
     parser.add_argument('--vismode',type=str,choices=['save','interactive','none'],default='save')
     args = parse_args_with_json_config(parser)
     args = resolve_camera_constraint_args(args)
-    args.path = apply_solver_to_path(args.path, args.solver)
-    args.path = apply_camera_constraint_shape_to_path(args.path, args.camera_constraint_shape)
+    original_path = args.path
+    args.path = apply_run_naming_to_path(
+        args.path,
+        args.solver,
+        args.camera_constraint_shape,
+        run_timestamp=args.run_timestamp,
+        append_timestamp=args.timestamp_output,
+    )
     if args.vismode == 'none':
         print("vismode=none is treated as headless save mode; visualization files will still be written.")
         args.vismode = 'save'
@@ -377,6 +360,16 @@ if __name__ =='__main__':
     if os.path.exists(tensorboardpath)==False:
         os.makedirs(tensorboardpath) 
     writer=SummaryWriter(tensorboardpath)
+    run_info = {
+        "input_path": original_path,
+        "resolved_path": args.path,
+        "solver": args.solver,
+        "camera_constraint_shape": args.camera_constraint_shape,
+        "timestamp_output": bool(args.timestamp_output),
+        "run_timestamp": args.path.rstrip(os.sep).split("_")[-1] if args.timestamp_output else args.run_timestamp,
+    }
+    with open(os.path.join(pcdpath, "run_info.json"), "w", encoding="utf-8") as handle:
+        json.dump(run_info, handle, indent=2)
     print(f"Resolved result directory: {pcdpath}")
     print(f"Visualization outputs will be written under: {vispath}")
     ###########################################################################

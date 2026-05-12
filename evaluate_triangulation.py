@@ -4,7 +4,7 @@ import os
 
 import numpy as np
 
-from camera_constraints import CAMERA_CONSTRAINT_SHAPES, apply_camera_constraint_shape_to_path
+from camera_constraints import CAMERA_CONSTRAINT_SHAPES
 from config_utils import parse_args_with_json_config
 from dataset.occupancy_map import build_occupancy_support, occupancy_uses_free_space_support
 from dataset.pcd import getPointNormalfromPly
@@ -15,6 +15,7 @@ from dataset.utils import (
     get_camera_model,
 )
 from field.field_attribute import get_visiblep_opt, is_point_in_fov
+from run_paths import apply_run_naming_to_path, find_latest_timestamped_run
 
 try:
     from scipy.optimize import least_squares
@@ -28,34 +29,6 @@ DEFAULT_REPROJ_THRESHOLDS = [0.5, 1.0, 2.0]
 
 def resolve_model_path(modelname):
     return modelname if modelname.startswith("data/") else os.path.join("data", modelname)
-
-
-def apply_solver_to_path(relative_path, solver):
-    if solver in (None, "", "neof"):
-        return relative_path
-
-    normalized_relative = os.path.normpath(relative_path)
-    parent_dir, leaf_dir = os.path.split(normalized_relative)
-    if leaf_dir in ("", ".", os.sep):
-        raise ValueError("path must end with a valid directory name")
-
-    suffix = f"_{solver}"
-    for shape_name in CAMERA_CONSTRAINT_SHAPES:
-        shape_suffix = f"_{shape_name}"
-        if leaf_dir.endswith(shape_suffix):
-            leaf_base = leaf_dir[: -len(shape_suffix)]
-            if not leaf_base.endswith(suffix):
-                leaf_base = f"{leaf_base}{suffix}"
-            leaf_dir = f"{leaf_base}{shape_suffix}"
-            break
-    else:
-        if not leaf_dir.endswith(suffix):
-            leaf_dir = f"{leaf_dir}{suffix}"
-
-    solver_path = os.path.join(parent_dir, leaf_dir) if parent_dir else leaf_dir
-    if relative_path.endswith(os.sep):
-        return solver_path + os.sep
-    return solver_path
 
 
 def resolve_pose_path(default_path, override_path):
@@ -1014,12 +987,32 @@ def main():
     parser.add_argument("--initial_pose", type=str, default=None)
     parser.add_argument("--optimized_pose", type=str, default=None)
     parser.add_argument("--output_json", type=str, default=None)
+    parser.add_argument("--run_timestamp", type=str, default=None)
     args = parse_args_with_json_config(parser, allow_unknown_config_keys=True)
     if args.modelname is None:
         raise ValueError("--modelname must be provided either on the command line or in the JSON config")
-    args.path = apply_solver_to_path(args.path, args.solver)
-    if args.camera_constraint_shape is not None:
-        args.path = apply_camera_constraint_shape_to_path(args.path, args.camera_constraint_shape)
+    requested_run_timestamp = args.run_timestamp
+    path_camera_constraint_shape = args.camera_constraint_shape or "box"
+    if requested_run_timestamp == "latest":
+        base_path = apply_run_naming_to_path(
+            args.path,
+            args.solver,
+            path_camera_constraint_shape,
+            run_timestamp=None,
+            append_timestamp=False,
+        )
+        latest_path = find_latest_timestamped_run("resultModel", base_path)
+        if latest_path is None:
+            raise FileNotFoundError(f"No timestamped run found for resultModel/{base_path}")
+        args.path = latest_path
+    else:
+        args.path = apply_run_naming_to_path(
+            args.path,
+            args.solver,
+            path_camera_constraint_shape,
+            run_timestamp=requested_run_timestamp,
+            append_timestamp=False,
+        )
     args = configure_camera_models_from_args(args)
 
     if args.trials < 1:
@@ -1039,6 +1032,12 @@ def main():
         raise ImportError("scipy is required for nonlinear refinement; install scipy or use --no_refine")
 
     result_dir = os.path.join("resultModel", args.path)
+    if requested_run_timestamp is None and not os.path.exists(result_dir):
+        latest_path = find_latest_timestamped_run("resultModel", args.path)
+        if latest_path is not None:
+            args.path = latest_path
+            result_dir = os.path.join("resultModel", args.path)
+            print(f"Using latest timestamped run: {result_dir}")
     pose_dir = args.pose_dir if args.pose_dir is not None else os.path.join(result_dir, "pose")
     args.geometry_file = (
         args.geometry_file if args.geometry_file is not None else os.path.join(result_dir, "geometry_data.npz")
