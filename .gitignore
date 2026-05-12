@@ -28,3 +28,6 @@ ENV/
 resultModel/
 tensorboardModel/
 modelpath/
+
+# Local mocap source data
+mocap_data/
