@@ -1,0 +1,5 @@
+# Raw mocap exports can be large and are usually regenerated outside the repo.
+*.json
+
+# Keep compact preprocessing metadata next to generated targets.
+!*_targets_summary.json

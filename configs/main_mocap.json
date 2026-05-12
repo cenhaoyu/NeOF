@@ -1,0 +1,99 @@
+{
+  "path": "random/mocap/p08_squat_correct/",
+
+  "image_width": 1920,
+  "image_height": 1080,
+  "fx": 1400.0,
+  "fy": 1400.0,
+  "cx": 959.5,
+  "cy": 539.5,
+
+  "camera_models": [
+    {
+      "name": "cam_00",
+      "focal_length": 25.9,
+      "sensor_width_mm": 36.0,
+      "sensor_height_mm": 24.0,
+      "resolution_x": 1920,
+      "resolution_y": 1080,
+      "min_projected_voxel_px": 1.5
+    },
+    {
+      "name": "cam_01",
+      "focal_length": 25.9,
+      "sensor_width_mm": 36.0,
+      "sensor_height_mm": 24.0,
+      "resolution_x": 1920,
+      "resolution_y": 1080,
+      "min_projected_voxel_px": 1.5
+    },
+    {
+      "name": "cam_02",
+      "focal_length": 25.9,
+      "sensor_width_mm": 36.0,
+      "sensor_height_mm": 24.0,
+      "resolution_x": 1920,
+      "resolution_y": 1080,
+      "min_projected_voxel_px": 1.5
+    },
+    {
+      "name": "cam_03",
+      "focal_length": 25.9,
+      "sensor_width_mm": 36.0,
+      "sensor_height_mm": 24.0,
+      "resolution_x": 1920,
+      "resolution_y": 1080,
+      "min_projected_voxel_px": 1.5
+    }
+  ],
+
+  "cameranum": 4,
+  "modelname": "mocap_data/p08_squat_correct_targets.csv",
+  "voxelnum": null,
+  "voxelsize": 0.02,
+  "kcoverage": 2,
+  "solver": "neof",
+  "optimizer": "Adam",
+  "lr1": 0.05,
+  "lr2": 0.05,
+  "epoches": 5,
+  "iterations": 10,
+
+  // Mocap marker targets are already the support points. Keep occupancy disabled
+  // unless you intentionally want to replace them with a free-space box.
+  "occupancy_map_enable": false,
+  "show_occupancy_map": false,
+
+  "bip_coverage_mode": "pair_angle",
+  "bip_solver_backend": "ortools_cpsat",
+  "bip_cpsat_weight_scale": 1000,
+  "bip_cpsat_num_workers": 0,
+  "bip_cpsat_random_seed": 0,
+  "bip_candidate_position_step": 0.5,
+  "bip_target_count": 10,
+  "bip_max_candidate_positions": 500,
+  "bip_max_base_candidates": 2500,
+  "bip_preprocess_enable": true,
+  "bip_visibility_filter_stat": "mean",
+  "bip_min_visible_points": 1,
+  "bip_min_visible_fraction": 0.1,
+  "bip_time_limit": 3600,
+  "bip_allow_duplicate_positions": false,
+  "bip_pair_candidate_limit": 25,
+  "bip_min_triangulation_angle_deg": 15.0,
+  "bip_max_triangulation_angle_deg": 165.0,
+  "bip_max_pair_variables": 200000,
+
+  "camera_constraint_enable": true,
+  "camera_constraint_shape": "plane",
+  "camera_constraint_plane_center": [1.65, -3.0, 0.8],
+  "camera_constraint_plane_span_u": [3.0, 0.0, 0.0],
+  "camera_constraint_plane_span_v": [0.0, 0.0, 1.5],
+  "camera_init_strategy": "grid",
+
+  // "vismode": "save",
+  "vismode": "interactive",
+  "coverage_vis_point_size": 5.0,
+  "timestamp_output": true,
+  "clear_previous_results": true
+}

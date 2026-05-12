@@ -1125,7 +1125,29 @@ class BIPCameraOpt:
             )
 
         candidate_scores = np.mean(visible_counts, axis=0)
-        keep_indices = np.argsort(candidate_scores)[-limit:]
+        if self.args.bip_allow_duplicate_positions:
+            keep_indices = np.argsort(candidate_scores)[-limit:]
+        else:
+            position_groups = _candidate_position_groups(candidates)
+            representatives = [
+                max(pose_indices, key=lambda pose_index: candidate_scores[int(pose_index)])
+                for pose_indices in position_groups
+            ]
+            representatives = sorted(
+                representatives,
+                key=lambda pose_index: candidate_scores[int(pose_index)],
+                reverse=True,
+            )
+            keep_order = list(representatives[:limit])
+            if len(keep_order) < limit:
+                selected = set(int(index) for index in keep_order)
+                remaining = [
+                    int(index)
+                    for index in np.argsort(candidate_scores)[::-1]
+                    if int(index) not in selected
+                ]
+                keep_order.extend(remaining[: limit - len(keep_order)])
+            keep_indices = np.asarray(keep_order, dtype=int)
         keep_indices = np.sort(keep_indices)
         reduced_candidates = [candidates[index] for index in keep_indices]
         print(

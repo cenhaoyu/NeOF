@@ -15,7 +15,7 @@ def readCamerapose(path):
 
 def Initdatafromrandom(args):
     pointspath=args.modelname
-    if pointspath.startswith("data/") == False:
+    if not os.path.exists(pointspath) and pointspath.startswith("data/") == False:
         pointspath="data/"+pointspath
     if args.voxelnum is not None:
         pcd,voxelnormals,minbound,size,geometry_info=getPointNormalfromPly(
