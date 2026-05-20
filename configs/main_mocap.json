@@ -1,13 +1,30 @@
 {
-  "path": "random/mocap/p08_squat_correct/",
+  // Results are written under resultModel/, tensorboardModel/ and modelpath/ using this subdirectory.
+  // The final directory name is auto-suffixed with the solver, camera_constraint_shape, and timestamp.
+  // e.g. "random/mocap/{mocap_sequence}/" becomes
+  // "random/mocap/p08_squat_correct_neof_box_walls_YYYYMMDDHHMMSS/".
+  "path": "random/mocap/{mocap_sequence}/",
 
+  // Mocap sequence selector. Override this on the command line to reuse this config:
+  //   --mocap_sequence p08_bird_correct
+  "mocap_sequence": "p08_bird_correct",
+  "mocap_data_dir": "mocap_data",
+
+  // All mocap geometry, camera poses, and occupancy definitions use world coordinates in meters.
+
+  // Legacy / fallback camera intrinsics used when camera_models is omitted.
+  // When camera_models is provided below, per-camera values override these defaults.
   "image_width": 1920,
-  "image_height": 1080,
-  "fx": 1400.0,
-  "fy": 1400.0,
+  "image_height": 1280,
+  "fx": 1381.3333333333333,
+  "fy": 1381.3333333333333,
   "cx": 959.5,
-  "cy": 539.5,
+  "cy": 639.5,
 
+  // Camera rig. cameranum must match this list length.
+  // Physical camera parameters are converted to fx/fy internally:
+  //   fx = focal_length / sensor_width_mm * resolution_x
+  //   fy = focal_length / sensor_height_mm * resolution_y
   "camera_models": [
     {
       "name": "cam_00",
@@ -15,7 +32,7 @@
       "sensor_width_mm": 36.0,
       "sensor_height_mm": 24.0,
       "resolution_x": 1920,
-      "resolution_y": 1080,
+      "resolution_y": 1280,
       "min_projected_voxel_px": 1.5
     },
     {
@@ -24,7 +41,7 @@
       "sensor_width_mm": 36.0,
       "sensor_height_mm": 24.0,
       "resolution_x": 1920,
-      "resolution_y": 1080,
+      "resolution_y": 1280,
       "min_projected_voxel_px": 1.5
     },
     {
@@ -33,38 +50,161 @@
       "sensor_width_mm": 36.0,
       "sensor_height_mm": 24.0,
       "resolution_x": 1920,
-      "resolution_y": 1080,
-      "min_projected_voxel_px": 1.5
-    },
-    {
-      "name": "cam_03",
-      "focal_length": 25.9,
-      "sensor_width_mm": 36.0,
-      "sensor_height_mm": 24.0,
-      "resolution_x": 1920,
-      "resolution_y": 1080,
+      "resolution_y": 1280,
       "min_projected_voxel_px": 1.5
     }
+    // {
+    //   "name": "cam_03",
+    //   "focal_length": 25.9,
+    //   "sensor_width_mm": 36.0,
+    //   "sensor_height_mm": 24.0,
+    //   "resolution_x": 1920,
+    //   "resolution_y": 1280,
+    //   "min_projected_voxel_px": 1.5
+    // }
+    // {
+    //   "name": "cam_04",
+    //   "focal_length": 25.9,
+    //   "sensor_width_mm": 36.0,
+    //   "sensor_height_mm": 24.0,
+    //   "resolution_x": 1920,
+    //   "resolution_y": 1280,
+    //   "min_projected_voxel_px": 1.5
+    // },
+    // {
+    //   "name": "cam_05",
+    //   "focal_length": 25.9,
+    //   "sensor_width_mm": 36.0,
+    //   "sensor_height_mm": 24.0,
+    //   "resolution_x": 1920,
+    //   "resolution_y": 1280,
+    //   "min_projected_voxel_px": 1.5
+    // }
   ],
 
-  "cameranum": 4,
-  "modelname": "mocap_data/p08_squat_correct_targets.csv",
+  // Number of cameras to optimize jointly.
+  "cameranum": 3,
+
+  // Mocap preprocessed marker targets. The CSV stores x,y,z,nx,ny,nz columns.
+  "modelname": "{mocap_data_dir}/{mocap_sequence}_targets.csv",
+
+  // Leave null for precomputed mocap target points. Use an integer only for mesh/point-cloud resampling.
   "voxelnum": null,
+
+  // Support-point scale in meters. For mocap this is the marker/support voxel size used by sampling quality.
   "voxelsize": 0.02,
-  "kcoverage": 2,
+
+  // Optimization/evaluation visibility model.
+  // "fov_only" treats mocap marker positions as independent trajectory samples and ignores
+  // hidden-point-removal self-occlusion between markers from different frames.
+  // Use "surface_occlusion" for mesh/surface point clouds.
+  "target_visibility_mode": "fov_only",
+  "eval_visibility_mode": "fov_only",
+
+  // Optional mesh scaling target height. Keep null for mocap CSV points that are already in meters.
+  "model_physical_height": null,
+
+  // Set to 1 for room-scale scenes, 0 for object-centric optimization.
+  "isscene": 0,
+
+  // Require every selected camera to see every support point as much as possible.
+  // This sets the effective optimization kcoverage and eval min_views to cameranum.
+  "require_all_cameras_coverage": true,
+
+  // K-coverage target used by NeOF coverage loss and by BIP when bip_coverage_mode="kcoverage".
+  // With require_all_cameras_coverage=true, this is automatically treated as cameranum.
+  "kcoverage": 3,
+
+  // Solver selector. Use "neof" for the neural observation field solver,
+  // or override with "--solver bip" to run the BIP solver on the same input data.
   "solver": "neof",
+
+  // Optimizer used for camera pose refinement. Supported: "Adam", "SGD".
   "optimizer": "Adam",
-  "lr1": 0.05,
-  "lr2": 0.05,
-  "epoches": 5,
-  "iterations": 10,
 
-  // Mocap marker targets are already the support points. Keep occupancy disabled
-  // unless you intentionally want to replace them with a free-space box.
-  "occupancy_map_enable": false,
-  "show_occupancy_map": false,
+  // Learning rate for camera translation updates in the gradient-based stage.
+  "lr1": 0.002,
 
-  "bip_coverage_mode": "pair_angle",
+  // Learning rate for camera rotation updates in the gradient-based stage.
+  "lr2": 0.002,
+
+  // Legacy decay parameter. pose_lr_decay below is the main per-epoch pose LR decay knob.
+  "decay": 0.0001,
+
+  // Number of outer hybrid-optimization epochs.
+  "epoches": 10,
+
+  // Number of gradient-based pose refinement steps per outer epoch.
+  "iterations": 2,
+
+  // NeOF loss weights. These are active only when solver="neof".
+  // They are normalized internally, so only their relative magnitudes matter.
+  "wvis": 0.1,
+  "wcc": 0.8,
+  "wco": 0.0,
+  "wres": 0.1,
+
+  // Sampling-quality deficit uses the projected size of one support voxel in pixels.
+  // topk=2 emphasizes multi-view reconstruction quality.
+  "sampling_quality_temperature": 1.0,
+  "sampling_quality_topk": 2,
+  "sampling_quality_min_projected_voxel_px": 10.0,
+
+  // Hidden feature dimension of the attention-based neural observation field.
+  "field_hidden_dim": 32,
+
+  // Number of attention heads in the neural observation field.
+  "field_num_heads": 1,
+
+  // Number of nearest voxels used as local attention context for each query point.
+  "field_context_voxel_num": 64,
+
+  // Number of nearest voxels used to estimate the query normal direction.
+  "field_normal_voxel_num": 8,
+
+  // Learning rate for neural field fitting.
+  "field_lr": 0.001,
+
+  // Per-epoch decay factor for the neural field learning rate.
+  "field_lr_decay": 0.99,
+
+  // Maximum optimization steps for fitting the neural field in one outer epoch.
+  "field_fit_steps": 300,
+
+  // Log interval for neural field fitting.
+  "field_fit_log_interval": 100,
+
+  // Whether to allow early stopping during neural field fitting.
+  "field_early_stop": false,
+
+  // Early-stop patience for neural field fitting, measured in optimization steps.
+  "field_early_stop_patience": 150,
+
+  // Minimum supervision-loss improvement required to reset the early-stop patience.
+  "field_early_stop_min_delta": 1e-06,
+
+  // Minimum number of field-fitting steps before early stopping is allowed.
+  "field_early_stop_min_steps": 300,
+
+  // Standard deviation of query-point jitter used during field supervision.
+  // This reduces the "query exactly copies itself" effect.
+  "field_query_jitter_std": 0.005,
+
+  // Exclude the closest voxel from the attention context during field supervision.
+  // This further discourages direct self-copy behavior.
+  "field_exclude_closest_context": true,
+
+  // Console/logging controls for NeOF. compact keeps the terminal short;
+  // optimization_key.log in each result folder keeps one-line key metrics.
+  "neof_log_mode": "compact",
+  "neof_pose_log_interval": 0,
+  "optimization_key_log_name": "optimization_key.log",
+
+  // BIP solver settings. These are active only when solver="bip".
+  // pair_angle is an angle-aware BIP objective that explicitly enumerates camera pairs.
+  // kcoverage is the paper-style objective: a support point is covered when
+  // it is seen by at least kcoverage selected cameras.
+  "bip_coverage_mode": "kcoverage",
   "bip_solver_backend": "ortools_cpsat",
   "bip_cpsat_weight_scale": 1000,
   "bip_cpsat_num_workers": 0,
@@ -73,27 +213,200 @@
   "bip_target_count": 10,
   "bip_max_candidate_positions": 500,
   "bip_max_base_candidates": 2500,
+
+  // Paper-style preprocessing: remove candidate poses that see too few support points.
   "bip_preprocess_enable": true,
   "bip_visibility_filter_stat": "mean",
   "bip_min_visible_points": 1,
   "bip_min_visible_fraction": 0.1,
   "bip_time_limit": 3600,
   "bip_allow_duplicate_positions": false,
-  "bip_pair_candidate_limit": 25,
+
+  // Pair-angle-only settings.
+  "bip_pair_candidate_limit": 40,
   "bip_min_triangulation_angle_deg": 15.0,
   "bip_max_triangulation_angle_deg": 165.0,
   "bip_max_pair_variables": 200000,
 
-  "camera_constraint_enable": true,
-  "camera_constraint_shape": "plane",
-  "camera_constraint_plane_center": [1.65, -3.0, 0.8],
-  "camera_constraint_plane_span_u": [3.0, 0.0, 0.0],
-  "camera_constraint_plane_span_v": [0.0, 0.0, 1.5],
-  "camera_init_strategy": "grid",
+  // Occupancy target prior.
+  // Mocap marker targets are already the support points. Keep this disabled
+  // unless you intentionally want to replace or reweight the target support.
+  "occupancy_map_enable": false,
+  "occupancy_map_mode": "route_kde",
+  "occupancy_map_file": null,
+  "occupancy_map_sigma_xyz": [0.08, 0.08, 0.12],
+  "occupancy_map_floor": 0.05,
+  "occupancy_map_normalize": "mean1",
+  "occupancy_map_route_step": 0.03,
 
-  // "vismode": "save",
-  "vismode": "interactive",
+  // Free-space occupancy-box settings. These are used when
+  // occupancy_map_enable=true and occupancy_map_mode="free_space_box".
+  "occupancy_box_min": [1.0, -0.3, 0.0],
+  "occupancy_box_max": [2.35, 0.6, 1.6],
+  "occupancy_box_grid_step": 0.05,
+  "occupancy_box_distribution": "uniform",
+
+  // Gaussian free-space occupancy settings. Used when occupancy_box_distribution="gaussian".
+  "occupancy_gaussian_center": [1.65, 0.15, 0.8],
+  "occupancy_gaussian_sigma_xyz": [0.25, 0.2, 0.35],
+
+  // Alternative occupancy mode: route_kde.
+  // Use an occupancy JSON with path_points and optional weights.
+  // "occupancy_map_mode": "route_kde",
+  // "occupancy_map_file": "mocap_route_example.json",
+  // "occupancy_map_sigma_xyz": [0.08, 0.08, 0.12],
+  // "occupancy_map_route_step": 0.03,
+
+  // Alternative occupancy mode: voxel_weights.
+  // Use a JSON/NPY/NPZ file with one weight per mocap support point.
+  // "occupancy_map_mode": "voxel_weights",
+  // "occupancy_map_file": "mocap_marker_weights.npy",
+
+  // Alternative occupancy mode: free_space_box + gaussian_mixture.
+  // Requires occupancy_map_file pointing to a JSON mixture specification.
+  // "occupancy_map_mode": "free_space_box",
+  // "occupancy_box_distribution": "gaussian_mixture",
+  // "occupancy_map_file": "mocap_free_space_gaussian_mixture.json",
+
+  // Shared occupancy visualization settings.
+  "show_occupancy_map": false,
+  "show_static_geometry_in_occupancy": false,
+  "occupancy_vis_mode": "volume",
+  "show_occupancy_route": false,
+  "show_occupancy_route_direction": false,
+  "occupancy_vis_clip_percentile": 95.0,
+  "occupancy_vis_point_size": 5.0,
+  "occupancy_vis_route_radius": 0.004,
+  "occupancy_vis_route_arrow_radius": 0.005,
+  "occupancy_vis_route_arrow_length": 0.05,
+  "occupancy_vis_volume_step": 0.04,
+  "occupancy_hotspot_fraction": 0.2,
+
+  // Result visualization outputs.
+  "save_comparison_visualization": true,
+  "save_coverage_visualization": true,
+  "save_camera_responsibility_visualization": true,
+  "save_per_camera_responsibility_visualization": true,
+  "save_visual_summary": true,
   "coverage_vis_point_size": 5.0,
+  "visual_summary_columns": 3,
+
+  // World-axis visualization settings. Tick spacing is interpreted in meters.
+  "show_world_axes": true,
+  "show_world_axis_tick_labels": false,
+  "world_axis_length": null,
+  "world_axis_tick_step": 0.5,
+  "world_axis_tick_size": null,
+  "world_axis_radius": null,
+  "world_axis_label_size": null,
+
+  // Camera visualization settings for initial_scene / optimized_scene and derived exports.
+  // A small local frustum is always drawn near the camera center.
+  // When show_camera_fov=true, an additional long FoV wireframe is extended across the scene.
+  "camera_vis_scale": 0.2,
+  "show_camera_optical_axis": true,
+  "show_camera_fov": true,
+  "camera_optical_axis_length": null,
+  "camera_line_radius": null,
+
+  // Per-epoch decay factor for the persistent pose optimizer.
+  "pose_lr_decay": 0.9,
+
+  // Soft depth gate temperature for the differentiable visibility surrogate.
+  "visibility_depth_temperature": 0.05,
+
+  // Soft field-of-view gate temperature for the differentiable visibility surrogate.
+  "visibility_fov_temperature": 0.05,
+
+  // Soft surface-facing gate temperature for the differentiable visibility surrogate.
+  "visibility_normal_temperature": 0.1,
+
+  // Initial camera placement strategy.
+  // "grid" places initial camera centers on an evenly spaced grid on/in the selected constraint.
+  // "random" samples initial camera centers uniformly on/in the selected constraint.
+  "camera_init_strategy": "grid",
+  // "camera_init_strategy": "random",
+
+  // During the non-gradient reset stage, sample this many random camera centers
+  // inside the selected placement constraint for each high-need support-point candidate,
+  // then orient them toward that support point.
+  "reset_random_samples_per_voxel": 8,
+
+  // Enable a hard camera placement constraint during initialization/reset
+  // and a differentiable constrained parameterization during gradient refinement.
+  "camera_constraint_enable": true,
+
+  // Camera placement constraint shape.
+  // Volume constraints: "box", "cylinder", "dome"
+  // Surface constraints: "box_surface", "box_walls", "plane", "cylinder_surface", "dome_surface"
+
+  // box volume around the mocap space
+  // "camera_constraint_shape": "box",
+  // "camera_constraint_box_min": [-1.35, -3.0, 0.2],
+  // "camera_constraint_box_max": [4.65, 3.0, 2.2],
+
+  // box surface
+  // Uses the same parameterization as "box", but restricts camera centers
+  // to the outer surface of the axis-aligned box.
+  // "camera_constraint_shape": "box_surface",
+  // "camera_constraint_box_min": [-1.35, -3.0, 0.2],
+  // "camera_constraint_box_max": [4.65, 3.0, 2.2],
+
+  // square room vertical walls
+  // Uses only the four vertical side walls of the axis-aligned box, not the floor or ceiling.
+  "camera_constraint_shape": "box_walls",
+  "camera_constraint_box_min": [-1.35, -3.0, 0.2],
+  "camera_constraint_box_max": [4.65, 3.0, 2.2],
+
+  // cylinder volume
+  // center_xy = [cx, cy]
+  // radius_xy = [rx, ry]
+  // z_range = [z_min, z_max]
+  // ((x-cx)/rx)^2 + ((y-cy)/ry)^2 <= 1
+  // "camera_constraint_shape": "cylinder",
+  // "camera_constraint_cylinder_center_xy": [1.65, 0.0],
+  // "camera_constraint_cylinder_radius_xy": [3.0, 3.0],
+  // "camera_constraint_cylinder_z_range": [0.2, 2.2],
+
+  // cylinder surface
+  // Uses the same parameterization as "cylinder", but restricts camera centers
+  // to the lateral surface instead of the full volume.
+  // "camera_constraint_shape": "cylinder_surface",
+  // "camera_constraint_cylinder_center_xy": [1.65, 0.0],
+  // "camera_constraint_cylinder_radius_xy": [3.0, 3.0],
+  // "camera_constraint_cylinder_z_range": [0.2, 2.2],
+
+  // dome volume
+  // base_center = [cx, cy, z_base]
+  // radius_xyz = [rx, ry, rz]
+  // ((x-cx)/rx)^2 + ((y-cy)/ry)^2 + ((z-z_base)/rz)^2 <= 1
+  // "camera_constraint_shape": "dome",
+  // "camera_constraint_dome_base_center": [1.65, 0.0, 0.2],
+  // "camera_constraint_dome_radius_xyz": [3.0, 3.0, 2.0],
+
+  // dome surface
+  // Uses the same parameterization as "dome", but restricts camera centers
+  // to the upper half-ellipsoid surface instead of the full volume.
+  // "camera_constraint_shape": "dome_surface",
+  // "camera_constraint_dome_base_center": [1.65, 0.0, 0.2],
+  // "camera_constraint_dome_radius_xyz": [3.0, 3.0, 2.0],
+
+  // single front-wall plane
+  // Points on the plane are parameterized as:
+  // center + alpha * span_u + beta * span_v, where alpha, beta are in [-1, 1].
+  // So span_u and span_v are half-extent vectors lying on the plane.
+  // "camera_constraint_shape": "plane",
+  // "camera_constraint_plane_center": [1.65, -3.0, 0.8],
+  // "camera_constraint_plane_span_u": [3.0, 0.0, 0.0],
+  // "camera_constraint_plane_span_v": [0.0, 0.0, 1.5],
+
+  // Output directory behavior.
   "timestamp_output": true,
-  "clear_previous_results": true
+  "run_timestamp": null,
+  "clear_previous_results": true,
+
+  // Visualization mode: save images, open an interactive window, or disable visualization.
+  // "vismode": "save",
+  // "vismode": "none",
+  "vismode": "interactive"
 }

@@ -15,6 +15,7 @@ from dataset.utils import (
     get_camera_model,
 )
 from field.field_attribute import get_visiblep_opt, is_point_in_fov
+from mocap_config import resolve_mocap_templates
 from run_paths import apply_run_naming_to_path, find_latest_timestamped_run
 
 try:
@@ -187,10 +188,11 @@ def apply_pixel_measurement_model(pixels, args, rng):
 
 def collect_observations(voxelnormals, position, rotation, args, rng):
     observations = [[] for _ in range(len(voxelnormals))]
+    visibility_mode = getattr(args, "eval_visibility_mode", "surface_occlusion")
     for camera_idx in range(len(position)):
         camera_model = get_camera_model(camera_idx)
         camera_intrinsic = get_camera_intrinsic(camera_idx)
-        if occupancy_uses_free_space_support(args):
+        if occupancy_uses_free_space_support(args) or visibility_mode == "fov_only":
             point_idx = is_point_in_fov(
                 voxelnormals[:, :3],
                 rotation[camera_idx],
@@ -712,10 +714,17 @@ def print_threshold_metrics(summary, prefix, thresholds, label, unit=""):
 
 def print_section(title, summary, args):
     total_points = get_summary_mean(summary, "total_points")
+    observable_points = get_summary_mean(summary, "observable_points")
+    observable_rate = get_summary_mean(summary, "observable_rate")
     reconstructed_points = get_summary_mean(summary, "reconstructed_points")
     reconstruction_rate = get_summary_mean(summary, "reconstruction_rate")
 
     print(title)
+    print(
+        f"  Observable points with >={args.min_views} views: "
+        f"{format_count(observable_points)}/{int(round(total_points))} "
+        f"({format_percent(observable_rate * 100)})"
+    )
     print(
         f"  Reconstructed points: {format_count(reconstructed_points)}/{int(round(total_points))} "
         f"({format_percent(reconstruction_rate * 100)})"
@@ -933,6 +942,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, default=None)
     parser.add_argument("--path", type=str, default="random/brother/")
+    parser.add_argument("--mocap_sequence", type=str, default=None)
+    parser.add_argument("--mocap_data_dir", type=str, default="mocap_data")
     parser.add_argument("--solver", type=str, choices=["neof", "bip"], default="neof")
     parser.add_argument(
         "--camera_constraint_shape",
@@ -950,10 +961,20 @@ def main():
     parser.add_argument("--cy", type=float, default=239.5)
     parser.add_argument("--model_physical_height", type=float, default=None)
     parser.add_argument("--kcoverage", type=int, default=3)
+    parser.add_argument("--require_all_cameras_coverage", dest="require_all_cameras_coverage", action="store_true")
+    parser.add_argument("--no_require_all_cameras_coverage", dest="require_all_cameras_coverage", action="store_false")
+    parser.set_defaults(require_all_cameras_coverage=False)
     parser.add_argument("--voxelnum", type=int, default=30000)
     parser.add_argument("--voxelsize", type=float, default=0.02)
     parser.add_argument("--target", type=str, choices=["voxel"], default="voxel")
     parser.add_argument("--radius", type=float, default=200.0)
+    parser.add_argument(
+        "--eval_visibility_mode",
+        type=str,
+        choices=["surface_occlusion", "fov_only"],
+        default="surface_occlusion",
+        help="Use surface_occlusion for hidden-point removal, or fov_only to ignore target self-occlusion.",
+    )
     parser.add_argument("--min_views", type=int, default=2)
     parser.add_argument("--trials", type=int, default=1)
     parser.add_argument("--seed", type=int, default=0)
@@ -1001,6 +1022,7 @@ def main():
     parser.add_argument("--output_json", type=str, default=None)
     parser.add_argument("--run_timestamp", type=str, default=None)
     args = parse_args_with_json_config(parser, allow_unknown_config_keys=True)
+    args = resolve_mocap_templates(args)
     if args.modelname is None:
         raise ValueError("--modelname must be provided either on the command line or in the JSON config")
     requested_run_timestamp = args.run_timestamp
@@ -1089,6 +1111,9 @@ def main():
     if "model_physical_height" in geometry_metadata:
         args.model_physical_height = float(geometry_metadata["model_physical_height"])
     args = configure_camera_models_from_args(args)
+    if args.require_all_cameras_coverage:
+        args.kcoverage = int(args.cameranum)
+        args.min_views = int(args.cameranum)
     if len(initial_position) != args.cameranum or len(optimized_position) != args.cameranum:
         raise ValueError(
             "Pose file camera count does not match geometry_data.npz camera_models_json. "
@@ -1152,6 +1177,7 @@ def main():
         f"min_depth={args.min_depth:.1e}, "
         f"min_triangulation_angle_deg={args.min_triangulation_angle_deg:.3f}"
     )
+    print(f"Evaluation visibility mode: {args.eval_visibility_mode}")
     if args.occupancy_eval_active:
         print(
             "Occupancy-aware evaluation: enabled | "

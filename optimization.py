@@ -7,6 +7,7 @@ from camera_constraints import (
 )
 from dataset.dataset import *
 from field.field_attribute import voxel_model
+from field.field_attribute import uses_fov_only_target_visibility
 from field.optimization import GenerateP3d
 from field.visibility_field import *
 
@@ -25,6 +26,7 @@ class CameraLayerOpt:
             getattr(args, "occupancy_map_enable", False)
             and getattr(args, "occupancy_map_mode", None) == "free_space_box"
         )
+        self.fov_only_visibility = self.free_space_support or uses_fov_only_target_visibility(args)
         if occupancy_weights is None:
             occupancy_weights = np.ones(len(voxelnormals), dtype=np.float32)
         occupancy_weights = np.asarray(occupancy_weights, dtype=np.float32)
@@ -44,7 +46,7 @@ class CameraLayerOpt:
             camera_constraint_min=args.camera_constraint_min,
             camera_constraint_max=args.camera_constraint_max,
             camera_constraint_data=args.camera_constraint_data,
-            target_support_mode="free_space" if self.free_space_support else "surface",
+            target_support_mode="free_space" if self.fov_only_visibility else "surface",
         ).to(device)
         self.fieldmodel = AddAttention(
             6,
@@ -55,7 +57,7 @@ class CameraLayerOpt:
         ).to(device)
 
         weights = np.array([args.wvis, args.wcc, args.wco, args.wres], dtype=np.float32)
-        if self.free_space_support:
+        if self.fov_only_visibility:
             weights[2] = 0.0
         weights_sum = float(np.sum(weights))
         if weights_sum <= 1e-8:
@@ -64,6 +66,36 @@ class CameraLayerOpt:
             weights = weights / weights_sum
         self.loss_weights_np = weights
         self.attribute_upperbound_np = np.array([args.kcoverage, np.pi / 2, 1.0, 1.0], dtype=np.float32)
+
+    def compact_log_mode(self):
+        return getattr(self.args, "neof_log_mode", "detailed") == "compact"
+
+    def log_line(self, message="", console=True):
+        if console:
+            print(message)
+        key_log_path = getattr(self.args, "optimization_key_log_path", None)
+        if key_log_path:
+            with open(key_log_path, "a", encoding="utf-8") as handle:
+                handle.write(str(message) + "\n")
+
+    def should_print_pose_step(self, iters, new_epoch_best, new_global_best):
+        if not self.compact_log_mode():
+            return True
+        interval = int(getattr(self.args, "neof_pose_log_interval", 1))
+        if new_epoch_best or new_global_best:
+            return True
+        if interval > 0 and (iters + 1) % interval == 0:
+            return True
+        return iters + 1 == self.args.iterations
+
+    def score_is_better(self, voxel_gap, joint_score, best_voxel_gap, best_joint_score):
+        if getattr(self.args, "require_all_cameras_coverage", False):
+            if voxel_gap < best_voxel_gap - 1e-9:
+                return True
+            if abs(voxel_gap - best_voxel_gap) <= 1e-9 and joint_score < best_joint_score:
+                return True
+            return False
+        return joint_score < best_joint_score
 
     def loss_weights(self):
         return npToTensor(self.loss_weights_np)
@@ -117,6 +149,30 @@ class CameraLayerOpt:
         else:
             gap = np.sum(squared_gap) / (self.args.kcoverage * self.args.kcoverage * len(coverage))
         return float(gap), coverage
+
+    def visibility_summary_lines(self, visibility):
+        if visibility is None:
+            return []
+        visibility = np.asarray(visibility)
+        if visibility.ndim != 2 or visibility.shape[0] == 0:
+            return []
+        point_count, camera_count = visibility.shape
+        per_camera = np.sum(visibility > 0, axis=0)
+        coverage = np.sum(visibility > 0, axis=1)
+        kcoverage = int(max(1, min(int(self.args.kcoverage), camera_count)))
+        lines = [
+            "  Per-camera visible points: "
+            + ", ".join(
+                f"cam{idx:02d}={int(count)}/{point_count}"
+                for idx, count in enumerate(per_camera)
+            ),
+            f"  Points seen by >= {kcoverage} cameras: {int(np.sum(coverage >= kcoverage))}/{point_count}",
+        ]
+        if getattr(self.args, "require_all_cameras_coverage", False):
+            lines.append(
+                f"  Points seen by every camera: {int(np.sum(coverage == camera_count))}/{point_count}"
+            )
+        return lines
 
     def judgeDistance(self,position,points):
         distance=np.linalg.norm(position-points,axis=1)
@@ -216,24 +272,26 @@ class CameraLayerOpt:
                 stale_steps += 1
 
             if last_step % self.args.field_fit_log_interval == 0 or last_step == self.args.field_fit_steps:
-                print(
-                    f"    Field fit step {last_step:04d}/{self.args.field_fit_steps} | "
-                    f"supervision loss: {current_loss:.6e}"
-                )
+                if not self.compact_log_mode():
+                    self.log_line(
+                        f"    Field fit step {last_step:04d}/{self.args.field_fit_steps} | "
+                        f"supervision loss: {current_loss:.6e}",
+                        console=True,
+                    )
 
             if (
                 self.args.field_early_stop
                 and last_step >= self.args.field_early_stop_min_steps
                 and stale_steps >= self.args.field_early_stop_patience
             ):
-                print(
+                self.log_line(
                     f"    Field fit early stop at step {last_step:04d}/{self.args.field_fit_steps} | "
                     f"best loss: {best_loss:.6e} at step {best_step:04d}"
                 )
                 break
 
         field_fit_time = time.time() - field_fit_start
-        print(
+        self.log_line(
             f"  Field fit time: {format_seconds(field_fit_time)} | "
             f"best loss: {best_loss:.6e} at step {best_step:04d}"
         )
@@ -313,29 +371,34 @@ class CameraLayerOpt:
         position=None,
         unweighted_voxel_gap=None,
         unweighted_joint_gap=None,
+        visibility=None,
     ):
         del position
-        print(title)
-        if self.free_space_support:
-            print("  Target support: free-space box (camera-object angle term disabled)")
+        self.log_line(title)
+        if self.fov_only_visibility:
+            visibility_label = "free-space box" if self.free_space_support else "FoV-only target visibility"
+            self.log_line(f"  Target support: {visibility_label} (camera-object angle term disabled)")
         if self.args.occupancy_map_enable:
-            print(f"  Weighted voxel K-coverage deficit (normalized): {voxel_gap:.4f}")
+            self.log_line(f"  Weighted voxel K-coverage deficit (normalized): {voxel_gap:.4f}")
             if unweighted_voxel_gap is not None:
-                print(f"  Unweighted voxel K-coverage deficit (normalized): {unweighted_voxel_gap:.4f}")
+                self.log_line(f"  Unweighted voxel K-coverage deficit (normalized): {unweighted_voxel_gap:.4f}")
         else:
-            print(f"  Voxel K-coverage deficit (normalized): {voxel_gap:.4f}")
+            self.log_line(f"  Voxel K-coverage deficit (normalized): {voxel_gap:.4f}")
         if joint_gap is not None:
             if self.args.occupancy_map_enable:
-                print(f"  Weighted exact joint observation gap: {joint_gap:.4f}")
+                self.log_line(f"  Weighted exact joint observation gap: {joint_gap:.4f}")
                 if unweighted_joint_gap is not None:
-                    print(f"  Unweighted exact joint observation gap: {unweighted_joint_gap:.4f}")
+                    self.log_line(f"  Unweighted exact joint observation gap: {unweighted_joint_gap:.4f}")
             else:
-                print(f"  Exact joint observation gap: {joint_gap:.4f}")
+                self.log_line(f"  Exact joint observation gap: {joint_gap:.4f}")
+        for line in self.visibility_summary_lines(visibility):
+            self.log_line(line)
 
     def opt(self,camerapose):
         bestposition = camerapose[:,:3].detach().clone()
         bestrotation = compute_rotation_matrix_from_ortho6d(camerapose[:,3:]).detach().clone()
         best_joint_score = np.inf
+        best_voxel_gap = np.inf
         bbp = bestposition.detach().clone()
         bbr = bestrotation.detach().clone()
         self.model.set_pose(camerapose.detach())
@@ -343,33 +406,36 @@ class CameraLayerOpt:
         self.fieldmodel.eval()
 
         with torch.no_grad():
-            rate_v = self.metric(bbp.cpu().numpy(),bbr.cpu().numpy(), weighted=True)
             unweighted_rate_v = None
-            initial_voxelmodel, _ = voxel_model(
+            initial_voxelmodel, initial_visibility = voxel_model(
                 self.args,
                 self.voxelnormals,
                 bbr.cpu().numpy(),
                 bbp.cpu().numpy(),
             )
+            rate_v, _ = self.coverage_gap_from_visibility(initial_visibility, weighted=True)
+            best_voxel_gap = rate_v
             best_joint_score = self.global_need_score(initial_voxelmodel[:, 6:].cpu().numpy(), weighted=True)
             if self.args.occupancy_map_enable:
-                unweighted_rate_v = self.metric(bbp.cpu().numpy(),bbr.cpu().numpy(), weighted=False)
+                unweighted_rate_v, _ = self.coverage_gap_from_visibility(initial_visibility, weighted=False)
             self.print_coverage_summary(
                 "Initial placement quality",
                 rate_v,
                 position=bbp.cpu().numpy(),
                 unweighted_voxel_gap=unweighted_rate_v,
+                visibility=initial_visibility,
             )
 
         for epoch in range(self.args.epoches):
             epoch_best_joint_score = np.inf
+            epoch_best_voxel_gap = np.inf
             position = copy.deepcopy(bestposition)
             rotation = copy.deepcopy(bestrotation)
             outer_epoch = epoch + 1
-            print(f"Outer epoch {outer_epoch:02d}/{self.args.epoches:02d}")
+            self.log_line(f"Outer epoch {outer_epoch:02d}/{self.args.epoches:02d}")
 
             if epoch % 5 == 0:
-                print("  Stage 1/2 | Non-gradient camera reset")
+                self.log_line("  Stage 1/2 | Non-gradient camera reset")
                 for min_camera in range(self.args.cameranum):
                     if self.args.isscene:
                         position,rotation = self.resetNewforScene(position.cpu().numpy(),rotation.cpu().numpy(),min_camera)
@@ -405,12 +471,24 @@ class CameraLayerOpt:
                         )
 
                 reset_status = []
-                if reset_joint_score < epoch_best_joint_score:
+                if self.score_is_better(
+                    reset_rate_v,
+                    reset_joint_score,
+                    epoch_best_voxel_gap,
+                    epoch_best_joint_score,
+                ):
+                    epoch_best_voxel_gap = reset_rate_v
                     epoch_best_joint_score = reset_joint_score
                     bestposition = position.detach().clone()
                     bestrotation = rotation.detach().clone()
                     reset_status.append("epoch best")
-                    if reset_joint_score < best_joint_score:
+                    if self.score_is_better(
+                        reset_rate_v,
+                        reset_joint_score,
+                        best_voxel_gap,
+                        best_joint_score,
+                    ):
+                        best_voxel_gap = reset_rate_v
                         best_joint_score = reset_joint_score
                         bbp = position.detach().clone()
                         bbr = rotation.detach().clone()
@@ -423,9 +501,10 @@ class CameraLayerOpt:
                     position=reset_position_np,
                     unweighted_voxel_gap=reset_unweighted_rate_v,
                     unweighted_joint_gap=reset_unweighted_joint_score,
+                    visibility=reset_visibility,
                 )
                 if reset_status:
-                    print(f"  Post-reset accepted as {', '.join(reset_status)}")
+                    self.log_line(f"  Post-reset accepted as {', '.join(reset_status)}")
 
             camerapose = torch.cat((position,torch.cat((rotation[:,0,:],rotation[:,2,:]),1)),1)
             self.model.set_pose(camerapose.detach())
@@ -439,7 +518,7 @@ class CameraLayerOpt:
                 position.cpu().numpy(),
             )
             voxelmodel_time = time.time() - voxelmodel_start
-            print(
+            self.log_line(
                 f"  Stage 2/2 | Fit neural observation field on {len(voxelmodel)} voxels "
                 f"(attribute build {format_seconds(voxelmodel_time)})"
             )
@@ -478,6 +557,7 @@ class CameraLayerOpt:
                     if self.args.occupancy_map_enable:
                         unweighted_rate_v, _ = self.coverage_gap_from_visibility(voxel_visibility, weighted=False)
                     num_v=np.sum(np.sign(v_coverage))
+                    all_camera_visible = int(np.sum(np.sum(voxel_visibility > 0, axis=1) == self.args.cameranum))
                     joint_score = self.global_need_score(current_voxelmodel[:, 6:].cpu().numpy(), weighted=True)
                     unweighted_joint_score = None
                     if self.args.occupancy_map_enable:
@@ -488,12 +568,14 @@ class CameraLayerOpt:
 
                 new_epoch_best = False
                 new_global_best = False
-                if joint_score < epoch_best_joint_score:
+                if self.score_is_better(rate_v, joint_score, epoch_best_voxel_gap, epoch_best_joint_score):
+                    epoch_best_voxel_gap = rate_v
                     epoch_best_joint_score = joint_score
                     new_epoch_best = True
                     bestposition = position.detach().clone()
                     bestrotation = rotation.detach().clone()
-                    if joint_score < best_joint_score:
+                    if self.score_is_better(rate_v, joint_score, best_voxel_gap, best_joint_score):
+                        best_voxel_gap = rate_v
                         best_joint_score = joint_score
                         new_global_best = True
                         bbp = position.detach().clone()
@@ -524,41 +606,64 @@ class CameraLayerOpt:
                 end = time.time()
                 voxel_gap_label = "weighted voxel deficit" if self.args.occupancy_map_enable else "voxel K-coverage deficit"
                 joint_gap_label = "weighted joint gap" if self.args.occupancy_map_enable else "joint observation gap"
-                co_label = "camera-object angle deficit (disabled)" if self.free_space_support else "camera-object angle deficit"
+                co_label = "camera-object angle deficit (disabled)" if self.fov_only_visibility else "camera-object angle deficit"
                 quality_label = "sampling-quality deficit"
-                print(
+                loss_value = float(L.detach().cpu())
+                loss_component_values = loss_components.detach().cpu().numpy()
+                compact_pose_line = (
                     f"  Pose step {iters+1:02d}/{self.args.iterations:02d} | "
-                    f"global step {global_step:03d}{status_text}\n"
-                    f"    Field-based joint loss: {L:.4f}\n"
-                    f"    Normalized loss components:\n"
-                    f"      visibility deficit          = {loss_components[0]:.4f}\n"
-                    f"      camera-camera angle deficit = {loss_components[1]:.4f}\n"
-                    f"      {co_label:<28} = {loss_components[2]:.4f}\n"
-                    f"      {quality_label:<28} = {loss_components[3]:.4f}\n"
-                    f"    Exact voxel-model evaluation:\n"
-                    f"      {voxel_gap_label:<28} = {rate_v:.4f}\n"
-                    f"      {joint_gap_label:<28} = {joint_score:.4f}\n"
-                    f"      voxels seen by >=1 camera   = {int(num_v)}/{len(v_coverage)}\n"
-                    f"      step time                   = {format_seconds(end-start)}"
+                    f"global={global_step:03d}{status_text} | "
+                    f"loss={loss_value:.4f} | "
+                    f"vis={loss_component_values[0]:.4f}, cc={loss_component_values[1]:.4f}, "
+                    f"co={loss_component_values[2]:.4f}, res={loss_component_values[3]:.4f} | "
+                    f"{voxel_gap_label}={rate_v:.4f} | "
+                    f"{joint_gap_label}={joint_score:.4f} | "
+                    f"seen>0={int(num_v)}/{len(v_coverage)} | "
+                    f"allcams={all_camera_visible}/{len(v_coverage)} | "
+                    f"step={format_seconds(end-start)}"
                 )
-                if self.args.occupancy_map_enable:
+                if self.compact_log_mode():
+                    self.log_line(
+                        compact_pose_line,
+                        console=self.should_print_pose_step(iters, new_epoch_best, new_global_best),
+                    )
+                else:
+                    self.log_line(compact_pose_line, console=False)
                     print(
+                        f"  Pose step {iters+1:02d}/{self.args.iterations:02d} | "
+                        f"global step {global_step:03d}{status_text}\n"
+                        f"    Field-based joint loss: {L:.4f}\n"
+                        f"    Normalized loss components:\n"
+                        f"      visibility deficit          = {loss_components[0]:.4f}\n"
+                        f"      camera-camera angle deficit = {loss_components[1]:.4f}\n"
+                        f"      {co_label:<28} = {loss_components[2]:.4f}\n"
+                        f"      {quality_label:<28} = {loss_components[3]:.4f}\n"
+                        f"    Exact voxel-model evaluation:\n"
+                        f"      {voxel_gap_label:<28} = {rate_v:.4f}\n"
+                        f"      {joint_gap_label:<28} = {joint_score:.4f}\n"
+                        f"      voxels seen by >=1 camera   = {int(num_v)}/{len(v_coverage)}\n"
+                        f"      voxels seen by every camera = {all_camera_visible}/{len(v_coverage)}\n"
+                        f"      step time                   = {format_seconds(end-start)}"
+                    )
+                if self.args.occupancy_map_enable:
+                    self.log_line(
                         f"      unweighted voxel deficit    = {unweighted_rate_v:.4f}\n"
-                        f"      unweighted joint gap        = {unweighted_joint_score:.4f}"
+                        f"      unweighted joint gap        = {unweighted_joint_score:.4f}",
+                        console=not self.compact_log_mode()
                     )
 
         with torch.no_grad():
-            rate_v = self.metric(bbp.cpu().numpy(),bbr.cpu().numpy(), weighted=True)
+            best_voxelmodel, best_visibility = voxel_model(
+                self.args,
+                self.voxelnormals,
+                bbr.cpu().numpy(),
+                bbp.cpu().numpy(),
+            )
+            rate_v, _ = self.coverage_gap_from_visibility(best_visibility, weighted=True)
             unweighted_rate_v = None
             unweighted_joint_score = None
             if self.args.occupancy_map_enable:
-                unweighted_rate_v = self.metric(bbp.cpu().numpy(),bbr.cpu().numpy(), weighted=False)
-                best_voxelmodel, _ = voxel_model(
-                    self.args,
-                    self.voxelnormals,
-                    bbr.cpu().numpy(),
-                    bbp.cpu().numpy(),
-                )
+                unweighted_rate_v, _ = self.coverage_gap_from_visibility(best_visibility, weighted=False)
                 unweighted_joint_score = self.global_need_score(best_voxelmodel[:, 6:].cpu().numpy(), weighted=False)
             self.print_coverage_summary(
                 "Best placement quality",
@@ -567,6 +672,7 @@ class CameraLayerOpt:
                 position=bbp.cpu().numpy(),
                 unweighted_voxel_gap=unweighted_rate_v,
                 unweighted_joint_gap=unweighted_joint_score,
+                visibility=best_visibility,
             )
         saveTrainingResult(self.posepath+"after.npy",bbp,bbr,self.scale)
         return bbp.cpu().numpy(),bbr.cpu().numpy()

@@ -4,6 +4,8 @@ import os
 
 import numpy as np
 
+from mocap_config import mocap_json_path, mocap_summary_path, mocap_targets_path
+
 
 JOINT_CENTER_SUFFIXES = ("AJC", "EJC", "HJC", "KJC", "SJC", "WJC")
 DERIVED_POINT_NAMES = {"HC", "OT"}
@@ -154,7 +156,9 @@ def build_summary(sequence_name, frames, common_keys, marker_keys, frame_numbers
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Preprocess mocap marker JSON into NeOF/BIP point-normal CSV targets.")
-    parser.add_argument("input_json", type=str)
+    parser.add_argument("input_json", type=str, nargs="?", default=None)
+    parser.add_argument("--mocap_sequence", type=str, default=None)
+    parser.add_argument("--mocap_data_dir", type=str, default="mocap_data")
     parser.add_argument("--sequence", type=str, default=None)
     parser.add_argument("--output_csv", type=str, default=None)
     parser.add_argument("--summary_json", type=str, default=None)
@@ -169,6 +173,13 @@ def parse_args():
 
 def main():
     args = parse_args()
+    if args.input_json is None:
+        if args.mocap_sequence is None:
+            raise ValueError("Either input_json or --mocap_sequence must be provided")
+        args.input_json = mocap_json_path(args.mocap_sequence, args.mocap_data_dir)
+    if args.mocap_sequence is None:
+        args.mocap_sequence = os.path.splitext(os.path.basename(args.input_json))[0]
+
     sequence_name, frames = load_mocap_sequence(args.input_json, args.sequence)
     marker_keys, common_keys = select_marker_keys(frames, args.marker_set)
     frame_numbers, points = extract_points(frames, marker_keys)
@@ -178,8 +189,7 @@ def main():
 
     output_csv = args.output_csv
     if output_csv is None:
-        stem = os.path.splitext(args.input_json)[0]
-        output_csv = f"{stem}_targets.csv"
+        output_csv = mocap_targets_path(args.mocap_sequence, args.mocap_data_dir)
     write_pointnormal_csv(output_csv, reduced_points)
 
     summary = build_summary(
@@ -196,7 +206,7 @@ def main():
     summary["output_csv"] = output_csv
     summary_path = args.summary_json
     if summary_path is None:
-        summary_path = os.path.splitext(output_csv)[0] + "_summary.json"
+        summary_path = mocap_summary_path(args.mocap_sequence, args.mocap_data_dir)
     with open(summary_path, "w", encoding="utf-8") as handle:
         json.dump(summary, handle, indent=2)
 

@@ -17,6 +17,7 @@ from torch.utils.tensorboard import SummaryWriter
 from bip_optimizer import BIPCameraOpt
 from optimization import CameraLayerOpt
 from field.field_attribute import voxel_model
+from mocap_config import resolve_mocap_templates
 from run_paths import apply_run_naming_to_path
 os.environ['PYOPENGL_PLATFORM'] = 'osmesa'
 
@@ -44,9 +45,19 @@ def format_runtime(seconds):
     return f"{int(hours)}h {int(rem_minutes)}m {rem_seconds:.2f}s"
 
 
+def append_optimization_key_log(args, message):
+    key_log_path = getattr(args, "optimization_key_log_path", None)
+    if not key_log_path:
+        return
+    with open(key_log_path, "a", encoding="utf-8") as handle:
+        handle.write(str(message) + "\n")
+
+
 if __name__ =='__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--path',type=str, default='random/moto/')
+    parser.add_argument('--mocap_sequence',type=str,default=None)
+    parser.add_argument('--mocap_data_dir',type=str,default='mocap_data')
     parser.add_argument('--lr1',type=float,default=1e-3)
     parser.add_argument('--lr2',type=float,default=1e-3)
     parser.add_argument('--image_width',type=int,default=640)
@@ -65,6 +76,9 @@ if __name__ =='__main__':
     parser.add_argument('--solver',type=str,choices=['neof','bip'],default='neof')
     parser.add_argument('--optimizer',type=str,default="Adam")
     parser.add_argument('--kcoverage',type=int,default=3)
+    parser.add_argument('--require_all_cameras_coverage',dest='require_all_cameras_coverage',action='store_true')
+    parser.add_argument('--no_require_all_cameras_coverage',dest='require_all_cameras_coverage',action='store_false')
+    parser.set_defaults(require_all_cameras_coverage=False)
     parser.add_argument('--isscene',type=int,default=0)
     parser.add_argument('--scene',type=int,dest='isscene')
     parser.add_argument('--wvis',type=float,default=0.4)
@@ -74,6 +88,8 @@ if __name__ =='__main__':
     parser.add_argument('--modelname',type=str,default='scene/room_0.ply')
     parser.add_argument('--voxelnum',type=int,default=30000)
     parser.add_argument('--voxelsize',type=float,default=0.02)
+    parser.add_argument('--target_visibility_mode',type=str,choices=['surface_occlusion','fov_only'],default='surface_occlusion')
+    parser.add_argument('--eval_visibility_mode',type=str,choices=['surface_occlusion','fov_only'],default='surface_occlusion')
     parser.add_argument('--field_hidden_dim',type=int,default=32)
     parser.add_argument('--field_num_heads',type=int,default=1)
     parser.add_argument('--field_context_voxel_num',type=int,default=64)
@@ -92,6 +108,9 @@ if __name__ =='__main__':
     parser.add_argument('--field_exclude_closest_context',dest='field_exclude_closest_context',action='store_true')
     parser.add_argument('--no_field_exclude_closest_context',dest='field_exclude_closest_context',action='store_false')
     parser.set_defaults(field_exclude_closest_context=True)
+    parser.add_argument('--neof_log_mode',type=str,choices=['compact','detailed'],default='detailed')
+    parser.add_argument('--neof_pose_log_interval',type=int,default=1)
+    parser.add_argument('--optimization_key_log_name',type=str,default='optimization_key.log')
     parser.add_argument('--occupancy_map_enable',dest='occupancy_map_enable',action='store_true')
     parser.add_argument('--no_occupancy_map_enable',dest='occupancy_map_enable',action='store_false')
     parser.set_defaults(occupancy_map_enable=False)
@@ -224,6 +243,7 @@ if __name__ =='__main__':
     parser.add_argument('--camera_line_radius',type=float,default=None)
     parser.add_argument('--vismode',type=str,choices=['save','interactive','none'],default='save')
     args = parse_args_with_json_config(parser)
+    args = resolve_mocap_templates(args)
     args = resolve_camera_constraint_args(args)
     original_path = args.path
     args.path = apply_run_naming_to_path(
@@ -237,6 +257,14 @@ if __name__ =='__main__':
         print("vismode=none is treated as headless save mode; visualization files will still be written.")
         args.vismode = 'save'
     args = configure_camera_models_from_args(args)
+    if args.require_all_cameras_coverage:
+        args.kcoverage = int(args.cameranum)
+        if args.solver == 'bip' and args.bip_coverage_mode != 'kcoverage':
+            print(
+                "require_all_cameras_coverage=true: switching BIP coverage mode "
+                f"from {args.bip_coverage_mode} to kcoverage."
+            )
+            args.bip_coverage_mode = 'kcoverage'
     if not args.camera_constraint_enable:
         raise ValueError("camera_init_strategy requires camera_constraint_enable=true")
     if args.decay != 1e-4 and args.pose_lr_decay == 0.95:
@@ -253,6 +281,8 @@ if __name__ =='__main__':
         raise ValueError("field_early_stop_min_steps must be at least 1")
     if args.pose_lr_decay <= 0:
         raise ValueError("pose_lr_decay must be positive")
+    if args.neof_pose_log_interval < 0:
+        raise ValueError("neof_pose_log_interval must be non-negative")
     if args.occupancy_map_enable and args.occupancy_map_mode != 'free_space_box' and not args.occupancy_map_file:
         raise ValueError("occupancy_map_file must be provided when occupancy_map_enable=true unless occupancy_map_mode=free_space_box")
     if args.occupancy_map_enable and args.occupancy_map_mode == 'free_space_box':
@@ -368,11 +398,28 @@ if __name__ =='__main__':
         "camera_constraint_shape": args.camera_constraint_shape,
         "timestamp_output": bool(args.timestamp_output),
         "run_timestamp": args.path.rstrip(os.sep).split("_")[-1] if args.timestamp_output else args.run_timestamp,
+        "require_all_cameras_coverage": bool(args.require_all_cameras_coverage),
+        "effective_kcoverage": int(args.kcoverage),
     }
     with open(os.path.join(pcdpath, "run_info.json"), "w", encoding="utf-8") as handle:
         json.dump(run_info, handle, indent=2)
+    if args.optimization_key_log_name:
+        args.optimization_key_log_path = os.path.join(pcdpath, args.optimization_key_log_name)
+        with open(args.optimization_key_log_path, "w", encoding="utf-8") as handle:
+            handle.write("Optimization key log\n")
+            handle.write(f"result_dir: {pcdpath}\n")
+            handle.write(f"solver: {args.solver}\n")
+            handle.write(f"camera_constraint_shape: {args.camera_constraint_shape}\n")
+            handle.write(f"target_visibility_mode: {args.target_visibility_mode}\n")
+            handle.write(f"require_all_cameras_coverage: {bool(args.require_all_cameras_coverage)}\n")
+            handle.write(f"effective_kcoverage: {int(args.kcoverage)}\n")
+            handle.write("\n")
+    else:
+        args.optimization_key_log_path = None
     print(f"Resolved result directory: {pcdpath}")
     print(f"Visualization outputs will be written under: {vispath}")
+    if args.optimization_key_log_path:
+        print(f"Key optimization log: {args.optimization_key_log_path}")
     ###########################################################################
     pcd,voxelnormals,occupancy_weights,occupancy_info,minbound,camerapose,scale,geometry_metadata=Initdatafromrandom(args)
     if pcd is None:
@@ -524,15 +571,19 @@ if __name__ =='__main__':
             **camera_vis_kwargs,
         )
     #############################################################################
-    print(f"Optimization timing started | solver={args.solver}")
+    start_line = f"Optimization timing started | solver={args.solver}"
+    print(start_line)
+    append_optimization_key_log(args, start_line)
     optimization_start_time = time.perf_counter()
     position,rotation = camlayopt.opt(camerapose)
     optimization_elapsed_s = time.perf_counter() - optimization_start_time
-    print(
+    finish_line = (
         "Optimization timing finished | "
         f"solver={args.solver} | elapsed={format_runtime(optimization_elapsed_s)} "
         f"({optimization_elapsed_s:.3f}s)"
     )
+    print(finish_line)
+    append_optimization_key_log(args, finish_line)
     optimized_position_np = np.asarray(position, dtype=float)
     optimized_rotation_np = np.asarray(rotation, dtype=float)
     if args.vismode == 'interactive':

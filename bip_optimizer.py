@@ -19,6 +19,7 @@ from dataset.utils import compute_rotation_matrix_from_ortho6d, get_camera_model
 from field.field_attribute import (
     get_visible_points_free_space,
     get_visiblep_opt,
+    uses_fov_only_target_visibility,
     uses_free_space_support,
     voxel_model,
 )
@@ -958,6 +959,7 @@ class BIPCameraOpt:
         self.scale = scale
         self.posepath = posepath
         self.free_space_support = uses_free_space_support(args)
+        self.fov_only_visibility = self.free_space_support or uses_fov_only_target_visibility(args)
         self.preprocessing_summary = {}
 
     def coverage_gap_from_visibility(self, voxel_visibility, weighted=True):
@@ -979,16 +981,30 @@ class BIPCameraOpt:
         if self.args.occupancy_map_enable:
             unweighted_gap, _ = self.coverage_gap_from_visibility(visibility, weighted=False)
         print(title)
-        if self.free_space_support:
-            print("  Target support: free-space box")
+        if self.fov_only_visibility:
+            visibility_label = "free-space box" if self.free_space_support else "FoV-only target visibility"
+            print(f"  Target support: {visibility_label}")
         print(f"  Weighted voxel K-coverage deficit (normalized): {weighted_gap:.4f}")
         if unweighted_gap is not None:
             print(f"  Unweighted voxel K-coverage deficit (normalized): {unweighted_gap:.4f}")
         print(f"  Voxels seen by >=1 camera: {int(np.sum(np.sign(coverage)))}/{len(coverage)}")
+        per_camera = np.sum(visibility > 0, axis=0)
+        print(
+            "  Per-camera visible points: "
+            + ", ".join(
+                f"cam{idx:02d}={int(count)}/{len(coverage)}"
+                for idx, count in enumerate(per_camera)
+            )
+        )
+        if getattr(self.args, "require_all_cameras_coverage", False):
+            print(
+                "  Voxels seen by every camera: "
+                f"{int(np.sum(coverage == self.args.cameranum))}/{len(coverage)}"
+            )
 
     def visible_indices_for_decision(self, slot, candidate):
         camera_model = get_camera_model(slot)
-        if self.free_space_support:
+        if self.fov_only_visibility:
             visible_indices, _ = get_visible_points_free_space(
                 self.voxelnormals,
                 candidate.position,
@@ -1261,6 +1277,8 @@ class BIPCameraOpt:
             "bip_min_visible_fraction": float(getattr(self.args, "bip_min_visible_fraction", 0.0)),
             "bip_time_limit": float(self.args.bip_time_limit),
             "bip_coverage_mode": self.args.bip_coverage_mode,
+            "require_all_cameras_coverage": bool(getattr(self.args, "require_all_cameras_coverage", False)),
+            "effective_kcoverage": int(self.args.kcoverage),
             "bip_solver_backend": getattr(self.args, "bip_solver_backend", "scipy_highs"),
             "bip_cpsat_weight_scale": float(getattr(self.args, "bip_cpsat_weight_scale", 1000.0)),
             "bip_cpsat_num_workers": int(getattr(self.args, "bip_cpsat_num_workers", 0)),

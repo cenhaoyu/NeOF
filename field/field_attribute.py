@@ -143,15 +143,20 @@ def uses_free_space_support(args):
     )
 
 
+def uses_fov_only_target_visibility(args):
+    return getattr(args, "target_visibility_mode", "surface_occlusion") == "fov_only"
+
+
 def voxel_model(args,voxelnormals,rotation,position):
     #################################get voxels in how many cameras################### 
 
     free_space_mode = uses_free_space_support(args)
+    fov_only_mode = free_space_mode or uses_fov_only_target_visibility(args)
     voxel_visibility = np.zeros([len(voxelnormals),len(position)])
     voxel_quality = np.zeros([len(voxelnormals),len(position)], dtype=float)
     for i in range(len(position)):
         camera_model = get_camera_model(i)
-        if free_space_mode:
+        if fov_only_mode:
             judge, _, point_cam = get_visible_points_free_space(
                 voxelnormals,
                 position[i],
@@ -182,13 +187,13 @@ def voxel_model(args,voxelnormals,rotation,position):
 
     angle_cc = np.ones([len(voxelnormals)], dtype=float) * (np.pi / 2)
     angle_co = np.ones([len(voxelnormals)], dtype=float)
-    if free_space_mode:
+    if fov_only_mode:
         angle_co = np.zeros([len(voxelnormals)], dtype=float)
     for i in range(len(voxelnormals)):
         cameraindex = np.where(voxel_visibility[i] > 0)[0]
         if len(cameraindex) == 0:
             continue
-        if free_space_mode:
+        if fov_only_mode:
             angle_cc[i] = calculate_camera_camera_deficit(position[cameraindex], voxelnormals[i, :3])
             continue
         if len(cameraindex) == 1:
