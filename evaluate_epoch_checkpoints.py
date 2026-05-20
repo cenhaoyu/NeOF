@@ -148,6 +148,7 @@ def run_checkpoint_eval(args, result_dir, record, output_dir):
         "field_loss": record.get("field_loss", ""),
         "checkpoint_voxel_kcoverage_deficit": record.get("voxel_kcoverage_deficit", ""),
         "checkpoint_exact_joint_observation_gap": record.get("exact_joint_observation_gap", ""),
+        "checkpoint_best_angle_deg_mean": record.get("best_triangulation_angle_deg_mean", ""),
         "points_seen_by_every_camera": record.get("points_seen_by_every_camera", ""),
         "total_points": record.get("total_points", ""),
         "camera_positions": compact_json(record.get("camera_positions")),
@@ -193,7 +194,13 @@ def main():
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--eval_visibility_mode", type=str, choices=["surface_occlusion", "fov_only"], default=None)
     parser.add_argument("--min_views", type=int, default=None)
-    parser.add_argument("--checkpoint_stages", type=str, nargs="*", choices=["post_reset", "post_gradient"], default=None)
+    parser.add_argument(
+        "--checkpoint_stages",
+        type=str,
+        nargs="*",
+        choices=["reset_search_selected", "reset_search_candidate", "post_reset", "post_gradient"],
+        default=None,
+    )
     parser.add_argument("--no_refine", action="store_true")
     parser.add_argument("--no_quantize_pixels", action="store_true")
     args = parse_args_with_json_config(parser, allow_unknown_config_keys=True)

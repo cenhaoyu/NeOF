@@ -138,13 +138,23 @@
   // Number of gradient-based pose refinement steps per outer epoch.
   "iterations": 2,
 
-  // Run the non-gradient reset at epoch 5, 10, 15, ...
-  // The reset pose and the post-gradient pose are both saved on reset epochs.
-  "non_gradient_reset_enable": true,
+  // Reset-search mode: first generate many non-gradient reset candidates,
+  // choose the best global layout by coverage + triangulation-angle proxy,
+  // then run gradient refinement from that selected candidate.
+  "reset_search_enable": true,
+  "reset_search_trials": 30,
+  "reset_search_top_k": 1,
+  "reset_search_score": "angle",
+  "reset_search_angle_weight": 0.25,
+  "reset_search_save_all": true,
+
+  // Optional periodic non-gradient reset inside the gradient loop.
+  // Keep this off for the two-stage reset-search -> gradient-refine experiment.
+  "non_gradient_reset_enable": false,
   "non_gradient_reset_interval": 5,
 
   // Save eval-compatible post-gradient pose checkpoints for every epoch.
-  // Reset epochs additionally save epoch_005_post_reset.npy, epoch_010_post_reset.npy, ...
+  // Reset-search selected pose is saved as epoch_000_reset_search_selected.npy.
   // These files are written under resultModel/.../pose/ and can be passed to
   // evaluate_triangulation.py via --optimized_pose.
   "epoch_checkpoint_interval": 1,

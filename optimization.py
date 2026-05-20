@@ -117,6 +117,8 @@ class CameraLayerOpt:
         rotation,
         checkpoint_mode,
         stage="post_gradient",
+        label=None,
+        pose_filename=None,
         field_loss=None,
         loss_components=None,
         global_step=None,
@@ -125,25 +127,16 @@ class CameraLayerOpt:
         rotation_np = rotation.detach().cpu().numpy() if hasattr(rotation, "detach") else np.asarray(rotation)
         world_position_np = position_np * self.scale[0] + self.scale[1]
         stage = str(stage)
-        checkpoint_label = f"epoch_{int(epoch_number):03d}_{stage}"
-        if stage == "post_gradient":
-            pose_filename = f"epoch_{int(epoch_number):03d}.npy"
-        else:
-            pose_filename = f"{checkpoint_label}.npy"
+        checkpoint_label = label or f"epoch_{int(epoch_number):03d}_{stage}"
+        if pose_filename is None:
+            if stage == "post_gradient":
+                pose_filename = f"epoch_{int(epoch_number):03d}.npy"
+            else:
+                pose_filename = f"{checkpoint_label}.npy"
         pose_path = os.path.join(self.posepath, pose_filename)
         saveTrainingResult(pose_path, npToTensor(position_np), npToTensor(rotation_np), self.scale)
 
-        voxelmodel, visibility = voxel_model(
-            self.args,
-            self.voxelnormals,
-            rotation_np,
-            position_np,
-        )
-        voxel_gap, coverage = self.coverage_gap_from_visibility(visibility, weighted=True)
-        joint_score = self.global_need_score(voxelmodel[:, 6:].cpu().numpy(), weighted=True)
-        per_camera_visible = np.sum(visibility > 0, axis=0).astype(int).tolist()
-        all_camera_visible = int(np.sum(np.sum(visibility > 0, axis=1) == self.args.cameranum))
-        kcoverage_visible = int(np.sum(coverage >= self.args.kcoverage))
+        metrics = self.evaluate_pose_quality(position_np, rotation_np, weighted=True)
 
         record = {
             "epoch": int(epoch_number),
@@ -162,20 +155,23 @@ class CameraLayerOpt:
                 "sampling_quality": float(loss_components[3]),
             },
             "global_step": None if global_step is None else int(global_step),
-            "voxel_kcoverage_deficit": float(voxel_gap),
-            "exact_joint_observation_gap": float(joint_score),
-            "per_camera_visible_points": per_camera_visible,
-            "points_seen_by_at_least_kcoverage": kcoverage_visible,
-            "points_seen_by_every_camera": all_camera_visible,
-            "total_points": int(len(self.voxelnormals)),
+            "voxel_kcoverage_deficit": metrics["voxel_kcoverage_deficit"],
+            "exact_joint_observation_gap": metrics["exact_joint_observation_gap"],
+            "per_camera_visible_points": metrics["per_camera_visible_points"],
+            "points_seen_by_at_least_kcoverage": metrics["points_seen_by_at_least_kcoverage"],
+            "points_seen_by_every_camera": metrics["points_seen_by_every_camera"],
+            "total_points": metrics["total_points"],
+            "best_triangulation_angle_deg_mean": metrics["best_triangulation_angle_deg_mean"],
             "camera_positions": world_position_np.tolist(),
             "camera_rotation_matrices": rotation_np.tolist(),
         }
         self.epoch_checkpoint_records.append(record)
         self.log_line(
             f"  Saved epoch checkpoint {epoch_number:03d} {stage} | "
-            f"pose={pose_filename} | voxel_gap={voxel_gap:.4f} | "
-            f"joint_gap={joint_score:.4f} | allcams={all_camera_visible}/{len(self.voxelnormals)}"
+            f"pose={pose_filename} | voxel_gap={metrics['voxel_kcoverage_deficit']:.4f} | "
+            f"joint_gap={metrics['exact_joint_observation_gap']:.4f} | "
+            f"angle={metrics['best_triangulation_angle_deg_mean']:.2f}deg | "
+            f"allcams={metrics['points_seen_by_every_camera']}/{len(self.voxelnormals)}"
         )
         return record
 
@@ -191,6 +187,7 @@ class CameraLayerOpt:
             "global_step",
             "voxel_kcoverage_deficit",
             "exact_joint_observation_gap",
+            "best_triangulation_angle_deg_mean",
             "points_seen_by_at_least_kcoverage",
             "points_seen_by_every_camera",
             "total_points",
@@ -213,6 +210,10 @@ class CameraLayerOpt:
             "checkpoint_epochs": self.epoch_checkpoint_epochs(),
             "non_gradient_reset_enable": bool(getattr(self.args, "non_gradient_reset_enable", True)),
             "non_gradient_reset_interval": int(getattr(self.args, "non_gradient_reset_interval", 5)),
+            "reset_search_enable": bool(getattr(self.args, "reset_search_enable", False)),
+            "reset_search_trials": int(getattr(self.args, "reset_search_trials", 0)),
+            "reset_search_top_k": int(getattr(self.args, "reset_search_top_k", 1)),
+            "reset_search_score": getattr(self.args, "reset_search_score", "angle"),
             "epoch_checkpoint_save_reset": bool(getattr(self.args, "epoch_checkpoint_save_reset", True)),
             "effective_kcoverage": int(self.args.kcoverage),
             "cameranum": int(self.args.cameranum),
@@ -233,6 +234,7 @@ class CameraLayerOpt:
                 f"  epoch={record['epoch']:03d} | stage={record.get('stage', ''):<13} | "
                 f"loss={field_loss_text} | voxel_gap={record['voxel_kcoverage_deficit']:.4f} | "
                 f"joint_gap={record['exact_joint_observation_gap']:.4f} | "
+                f"angle={record.get('best_triangulation_angle_deg_mean', np.nan):.2f}deg | "
                 f"allcams={record['points_seen_by_every_camera']}/{record['total_points']}"
             )
 
@@ -288,6 +290,85 @@ class CameraLayerOpt:
         else:
             gap = np.sum(squared_gap) / (self.args.kcoverage * self.args.kcoverage * len(coverage))
         return float(gap), coverage
+
+    def best_triangulation_angle_for_point(self, position, visible_camera_indices, point):
+        if len(visible_camera_indices) < 2:
+            return np.nan
+        rays = []
+        for camera_idx in visible_camera_indices:
+            ray = position[camera_idx] - point
+            norm = np.linalg.norm(ray)
+            if norm > 1e-8:
+                rays.append(ray / norm)
+        if len(rays) < 2:
+            return np.nan
+        max_angle = 0.0
+        for i in range(len(rays) - 1):
+            for j in range(i + 1, len(rays)):
+                cos_angle = np.clip(np.dot(rays[i], rays[j]), -1.0, 1.0)
+                angle = np.degrees(np.arccos(np.clip(abs(cos_angle), 0.0, 1.0)))
+                max_angle = max(max_angle, float(angle))
+        return max_angle
+
+    def visibility_triangulation_angle_mean(self, position, visibility):
+        visibility = np.asarray(visibility)
+        min_views = max(2, min(int(self.args.kcoverage), int(self.args.cameranum)))
+        angles = []
+        weights = []
+        for point_idx, point_visibility in enumerate(visibility):
+            visible_camera_indices = np.flatnonzero(point_visibility > 0)
+            if len(visible_camera_indices) < min_views:
+                continue
+            angle = self.best_triangulation_angle_for_point(
+                position,
+                visible_camera_indices,
+                self.voxelnormals[point_idx, :3],
+            )
+            if np.isfinite(angle):
+                angles.append(angle)
+                weights.append(float(self.voxel_occupancy_np[point_idx]))
+        if len(angles) == 0:
+            return np.nan
+        return float(np.average(np.asarray(angles, dtype=float), weights=np.asarray(weights, dtype=float)))
+
+    def evaluate_pose_quality(self, position, rotation, weighted=True):
+        voxelmodel, visibility = voxel_model(
+            self.args,
+            self.voxelnormals,
+            rotation,
+            position,
+        )
+        voxel_gap, coverage = self.coverage_gap_from_visibility(visibility, weighted=weighted)
+        joint_score = self.global_need_score(voxelmodel[:, 6:].cpu().numpy(), weighted=weighted)
+        per_camera_visible = np.sum(visibility > 0, axis=0).astype(int).tolist()
+        all_camera_visible = int(np.sum(np.sum(visibility > 0, axis=1) == self.args.cameranum))
+        kcoverage_visible = int(np.sum(coverage >= self.args.kcoverage))
+        return {
+            "voxelmodel": voxelmodel,
+            "visibility": visibility,
+            "voxel_kcoverage_deficit": float(voxel_gap),
+            "exact_joint_observation_gap": float(joint_score),
+            "per_camera_visible_points": per_camera_visible,
+            "points_seen_by_at_least_kcoverage": kcoverage_visible,
+            "points_seen_by_every_camera": all_camera_visible,
+            "total_points": int(len(self.voxelnormals)),
+            "best_triangulation_angle_deg_mean": self.visibility_triangulation_angle_mean(position, visibility),
+        }
+
+    def reset_search_score_key(self, metrics):
+        voxel_gap = float(metrics["voxel_kcoverage_deficit"])
+        joint_score = float(metrics["exact_joint_observation_gap"])
+        angle = float(metrics.get("best_triangulation_angle_deg_mean", np.nan))
+        if not np.isfinite(angle):
+            angle = -1.0
+        score_mode = getattr(self.args, "reset_search_score", "angle")
+        if score_mode == "joint_gap":
+            return (voxel_gap, joint_score, -angle)
+        if score_mode == "combined":
+            angle_weight = float(getattr(self.args, "reset_search_angle_weight", 0.25))
+            combined = joint_score - angle_weight * (angle / 90.0)
+            return (voxel_gap, combined, joint_score, -angle)
+        return (voxel_gap, -angle, joint_score)
 
     def visibility_summary_lines(self, visibility):
         if visibility is None:
@@ -436,15 +517,18 @@ class CameraLayerOpt:
         )
         self.fieldmodel.eval()
 
-    def reset_camera(self, position, rotation, min_camera, sample, scene_mode):
+    def reset_camera(self, position, rotation, min_camera, sample, scene_mode, priority_source="field"):
         voxelmodel, _ = voxel_model(
             self.args,
             self.voxelnormals,
             rotation,
             position,
         )
-        with torch.no_grad():
-            predicted = self.predict_field(voxelmodel).cpu().numpy()
+        if priority_source == "exact":
+            predicted = voxelmodel[:, 6:].cpu().numpy()
+        else:
+            with torch.no_grad():
+                predicted = self.predict_field(voxelmodel).cpu().numpy()
         origin_score = self.global_need_score(voxelmodel[:, 6:].cpu().numpy())
 
         rr = rotation[min_camera]
@@ -491,11 +575,167 @@ class CameraLayerOpt:
         torch.cuda.empty_cache()
         return npToTensor(position), npToTensor(rotation)
 
-    def resetNewforScene(self,position,rotation,min_camera):
-        return self.reset_camera(position, rotation, min_camera, sample=100, scene_mode=True)
+    def resetNewforScene(self,position,rotation,min_camera,priority_source="field"):
+        return self.reset_camera(position, rotation, min_camera, sample=100, scene_mode=True, priority_source=priority_source)
 
-    def resetNewforModel(self,position,rotation,min_camera):
-        return self.reset_camera(position, rotation, min_camera, sample=20, scene_mode=False)
+    def resetNewforModel(self,position,rotation,min_camera,priority_source="field"):
+        return self.reset_camera(position, rotation, min_camera, sample=20, scene_mode=False, priority_source=priority_source)
+
+    def run_single_reset_search_trial(self, start_position, start_rotation):
+        position = np.asarray(start_position, dtype=float).copy()
+        rotation = np.asarray(start_rotation, dtype=float).copy()
+        for min_camera in range(self.args.cameranum):
+            if self.args.isscene:
+                position, rotation = self.resetNewforScene(
+                    position,
+                    rotation,
+                    min_camera,
+                    priority_source="exact",
+                )
+            else:
+                position, rotation = self.resetNewforModel(
+                    position,
+                    rotation,
+                    min_camera,
+                    priority_source="exact",
+                )
+            position = position.detach().cpu().numpy()
+            rotation = rotation.detach().cpu().numpy()
+        return position, rotation
+
+    def reset_search_candidate_record(self, trial, position, rotation, source):
+        metrics = self.evaluate_pose_quality(position, rotation, weighted=True)
+        score_key = self.reset_search_score_key(metrics)
+        return {
+            "trial": int(trial),
+            "source": str(source),
+            "score_key": list(score_key),
+            "position": np.asarray(position, dtype=float),
+            "rotation": np.asarray(rotation, dtype=float),
+            "voxel_kcoverage_deficit": metrics["voxel_kcoverage_deficit"],
+            "exact_joint_observation_gap": metrics["exact_joint_observation_gap"],
+            "best_triangulation_angle_deg_mean": metrics["best_triangulation_angle_deg_mean"],
+            "points_seen_by_at_least_kcoverage": metrics["points_seen_by_at_least_kcoverage"],
+            "points_seen_by_every_camera": metrics["points_seen_by_every_camera"],
+            "total_points": metrics["total_points"],
+            "per_camera_visible_points": metrics["per_camera_visible_points"],
+        }
+
+    def write_reset_search_candidates_csv(self, candidates):
+        if not candidates:
+            return
+        path = os.path.join(self.posepath, "reset_search_candidates.csv")
+        fields = [
+            "rank",
+            "trial",
+            "source",
+            "pose_file",
+            "score_key",
+            "voxel_kcoverage_deficit",
+            "exact_joint_observation_gap",
+            "best_triangulation_angle_deg_mean",
+            "points_seen_by_at_least_kcoverage",
+            "points_seen_by_every_camera",
+            "total_points",
+            "per_camera_visible_points",
+            "camera_positions",
+        ]
+        with open(path, "w", encoding="utf-8", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fields)
+            writer.writeheader()
+            for rank, candidate in enumerate(candidates, start=1):
+                position = candidate["position"]
+                world_position = position * self.scale[0] + self.scale[1]
+                row = {
+                    "rank": rank,
+                    "trial": candidate["trial"],
+                    "source": candidate["source"],
+                    "pose_file": candidate.get("pose_file", ""),
+                    "score_key": json.dumps(candidate["score_key"], separators=(",", ":")),
+                    "voxel_kcoverage_deficit": candidate["voxel_kcoverage_deficit"],
+                    "exact_joint_observation_gap": candidate["exact_joint_observation_gap"],
+                    "best_triangulation_angle_deg_mean": candidate["best_triangulation_angle_deg_mean"],
+                    "points_seen_by_at_least_kcoverage": candidate["points_seen_by_at_least_kcoverage"],
+                    "points_seen_by_every_camera": candidate["points_seen_by_every_camera"],
+                    "total_points": candidate["total_points"],
+                    "per_camera_visible_points": json.dumps(candidate["per_camera_visible_points"], separators=(",", ":")),
+                    "camera_positions": json.dumps(world_position.tolist(), separators=(",", ":")),
+                }
+                writer.writerow(row)
+        self.log_line(f"Reset-search candidate CSV saved: {path}")
+
+    def run_reset_search(self, start_position, start_rotation):
+        if (
+            not getattr(self.args, "reset_search_enable", False)
+            or int(getattr(self.args, "reset_search_trials", 0)) <= 0
+        ):
+            return start_position, start_rotation, None
+
+        start_position_np = start_position.detach().cpu().numpy() if hasattr(start_position, "detach") else np.asarray(start_position)
+        start_rotation_np = start_rotation.detach().cpu().numpy() if hasattr(start_rotation, "detach") else np.asarray(start_rotation)
+        trial_count = int(getattr(self.args, "reset_search_trials", 0))
+        top_k = int(getattr(self.args, "reset_search_top_k", 1))
+        self.log_line(
+            f"Reset-search stage | trials={trial_count} | top_k={top_k} | "
+            f"score={getattr(self.args, 'reset_search_score', 'angle')}"
+        )
+
+        candidates = [
+            self.reset_search_candidate_record(0, start_position_np, start_rotation_np, "initial")
+        ]
+        for trial in range(1, trial_count + 1):
+            trial_start = time.time()
+            position, rotation = self.run_single_reset_search_trial(start_position_np, start_rotation_np)
+            candidate = self.reset_search_candidate_record(trial, position, rotation, "non_gradient_reset")
+            candidates.append(candidate)
+            self.log_line(
+                f"  reset trial {trial:03d}/{trial_count:03d} | "
+                f"voxel_gap={candidate['voxel_kcoverage_deficit']:.4f} | "
+                f"joint_gap={candidate['exact_joint_observation_gap']:.4f} | "
+                f"angle={candidate['best_triangulation_angle_deg_mean']:.2f}deg | "
+                f"allcams={candidate['points_seen_by_every_camera']}/{candidate['total_points']} | "
+                f"time={format_seconds(time.time() - trial_start)}"
+            )
+
+        candidates = sorted(candidates, key=lambda candidate: tuple(candidate["score_key"]))
+        if getattr(self.args, "reset_search_save_all", True):
+            for rank, candidate in enumerate(candidates, start=1):
+                pose_filename = f"reset_search_rank_{rank:03d}_trial_{candidate['trial']:03d}.npy"
+                candidate["pose_file"] = pose_filename
+                saveTrainingResult(
+                    os.path.join(self.posepath, pose_filename),
+                    npToTensor(candidate["position"]),
+                    npToTensor(candidate["rotation"]),
+                    self.scale,
+                )
+        self.write_reset_search_candidates_csv(candidates)
+
+        selected_count = min(top_k, len(candidates))
+        for rank, candidate in enumerate(candidates[:selected_count], start=1):
+            stage = "reset_search_selected" if rank == 1 else "reset_search_candidate"
+            label = f"reset_search_rank_{rank:03d}_trial_{candidate['trial']:03d}"
+            pose_filename = candidate.get("pose_file") or f"{label}.npy"
+            self.save_epoch_checkpoint(
+                0,
+                npToTensor(candidate["position"]),
+                npToTensor(candidate["rotation"]),
+                stage,
+                stage=stage,
+                label=label,
+                pose_filename=pose_filename,
+            )
+
+        selected = candidates[0]
+        self.log_line(
+            f"Reset-search selected trial {selected['trial']:03d} | "
+            f"voxel_gap={selected['voxel_kcoverage_deficit']:.4f} | "
+            f"joint_gap={selected['exact_joint_observation_gap']:.4f} | "
+            f"angle={selected['best_triangulation_angle_deg_mean']:.2f}deg | "
+            f"allcams={selected['points_seen_by_every_camera']}/{selected['total_points']}"
+        )
+        selected_position = npToTensor(selected["position"])
+        selected_rotation = npToTensor(selected["rotation"])
+        return selected_position, selected_rotation, selected
 
     def metric(self,position,rotation,weighted=True):
         _,voxel_visibility=voxel_model(self.args,self.voxelnormals,rotation,position)
@@ -569,6 +809,29 @@ class CameraLayerOpt:
                 position=bbp.cpu().numpy(),
                 unweighted_voxel_gap=unweighted_rate_v,
                 visibility=initial_visibility,
+            )
+
+        search_position, search_rotation, search_selected = self.run_reset_search(bbp, bbr)
+        if search_selected is not None:
+            bestposition = search_position.detach().clone()
+            bestrotation = search_rotation.detach().clone()
+            bbp = bestposition.detach().clone()
+            bbr = bestrotation.detach().clone()
+            best_voxel_gap = float(search_selected["voxel_kcoverage_deficit"])
+            best_joint_score = float(search_selected["exact_joint_observation_gap"])
+            best_field_loss = None
+            best_loss_components = None
+            best_global_step = None
+            self.print_coverage_summary(
+                "Selected reset-search placement quality",
+                best_voxel_gap,
+                best_joint_score,
+                position=bbp.cpu().numpy(),
+                visibility=self.evaluate_pose_quality(
+                    bbp.cpu().numpy(),
+                    bbr.cpu().numpy(),
+                    weighted=True,
+                )["visibility"],
             )
 
         for epoch in range(self.args.epoches):

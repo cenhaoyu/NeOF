@@ -75,6 +75,16 @@ if __name__ =='__main__':
     parser.add_argument('--no_non_gradient_reset_enable',dest='non_gradient_reset_enable',action='store_false')
     parser.set_defaults(non_gradient_reset_enable=True)
     parser.add_argument('--non_gradient_reset_interval',type=int,default=5)
+    parser.add_argument('--reset_search_enable',dest='reset_search_enable',action='store_true')
+    parser.add_argument('--no_reset_search_enable',dest='reset_search_enable',action='store_false')
+    parser.set_defaults(reset_search_enable=False)
+    parser.add_argument('--reset_search_trials',type=int,default=0)
+    parser.add_argument('--reset_search_top_k',type=int,default=1)
+    parser.add_argument('--reset_search_score',type=str,choices=['joint_gap','angle','combined'],default='angle')
+    parser.add_argument('--reset_search_angle_weight',type=float,default=0.25)
+    parser.add_argument('--reset_search_save_all',dest='reset_search_save_all',action='store_true')
+    parser.add_argument('--no_reset_search_save_all',dest='reset_search_save_all',action='store_false')
+    parser.set_defaults(reset_search_save_all=True)
     parser.add_argument('--epoch_checkpoint_interval',type=int,default=0)
     parser.add_argument('--epoch_checkpoint_epochs',type=int,nargs='*',default=None)
     parser.add_argument('--epoch_checkpoint_mode',type=str,choices=['epoch_best','epoch_current','global_best'],default='epoch_best')
@@ -295,6 +305,12 @@ if __name__ =='__main__':
         raise ValueError("neof_pose_log_interval must be non-negative")
     if args.non_gradient_reset_interval < 1:
         raise ValueError("non_gradient_reset_interval must be at least 1")
+    if args.reset_search_trials < 0:
+        raise ValueError("reset_search_trials must be non-negative")
+    if args.reset_search_top_k < 1:
+        raise ValueError("reset_search_top_k must be at least 1")
+    if args.reset_search_angle_weight < 0:
+        raise ValueError("reset_search_angle_weight must be non-negative")
     if args.epoch_checkpoint_interval < 0:
         raise ValueError("epoch_checkpoint_interval must be non-negative")
     if args.epoch_checkpoint_epochs is not None and any(epoch < 1 for epoch in args.epoch_checkpoint_epochs):
@@ -418,6 +434,12 @@ if __name__ =='__main__':
         "effective_kcoverage": int(args.kcoverage),
         "non_gradient_reset_enable": bool(args.non_gradient_reset_enable),
         "non_gradient_reset_interval": int(args.non_gradient_reset_interval),
+        "reset_search_enable": bool(args.reset_search_enable),
+        "reset_search_trials": int(args.reset_search_trials),
+        "reset_search_top_k": int(args.reset_search_top_k),
+        "reset_search_score": args.reset_search_score,
+        "reset_search_angle_weight": float(args.reset_search_angle_weight),
+        "reset_search_save_all": bool(args.reset_search_save_all),
         "epoch_checkpoint_interval": int(args.epoch_checkpoint_interval),
         "epoch_checkpoint_epochs": args.epoch_checkpoint_epochs,
         "epoch_checkpoint_mode": args.epoch_checkpoint_mode,
@@ -437,6 +459,10 @@ if __name__ =='__main__':
             handle.write(f"effective_kcoverage: {int(args.kcoverage)}\n")
             handle.write(f"non_gradient_reset_enable: {bool(args.non_gradient_reset_enable)}\n")
             handle.write(f"non_gradient_reset_interval: {int(args.non_gradient_reset_interval)}\n")
+            handle.write(f"reset_search_enable: {bool(args.reset_search_enable)}\n")
+            handle.write(f"reset_search_trials: {int(args.reset_search_trials)}\n")
+            handle.write(f"reset_search_top_k: {int(args.reset_search_top_k)}\n")
+            handle.write(f"reset_search_score: {args.reset_search_score}\n")
             handle.write(f"epoch_checkpoint_interval: {int(args.epoch_checkpoint_interval)}\n")
             handle.write(f"epoch_checkpoint_epochs: {args.epoch_checkpoint_epochs}\n")
             handle.write(f"epoch_checkpoint_mode: {args.epoch_checkpoint_mode}\n")
