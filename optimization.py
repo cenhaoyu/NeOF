@@ -1,4 +1,5 @@
 import copy
+import csv
 import json
 import os
 import time
@@ -115,6 +116,7 @@ class CameraLayerOpt:
         position,
         rotation,
         checkpoint_mode,
+        stage="post_gradient",
         field_loss=None,
         loss_components=None,
         global_step=None,
@@ -122,7 +124,12 @@ class CameraLayerOpt:
         position_np = position.detach().cpu().numpy() if hasattr(position, "detach") else np.asarray(position)
         rotation_np = rotation.detach().cpu().numpy() if hasattr(rotation, "detach") else np.asarray(rotation)
         world_position_np = position_np * self.scale[0] + self.scale[1]
-        pose_filename = f"epoch_{int(epoch_number):03d}.npy"
+        stage = str(stage)
+        checkpoint_label = f"epoch_{int(epoch_number):03d}_{stage}"
+        if stage == "post_gradient":
+            pose_filename = f"epoch_{int(epoch_number):03d}.npy"
+        else:
+            pose_filename = f"{checkpoint_label}.npy"
         pose_path = os.path.join(self.posepath, pose_filename)
         saveTrainingResult(pose_path, npToTensor(position_np), npToTensor(rotation_np), self.scale)
 
@@ -141,6 +148,8 @@ class CameraLayerOpt:
         record = {
             "epoch": int(epoch_number),
             "mode": str(checkpoint_mode),
+            "stage": stage,
+            "label": checkpoint_label,
             "pose_file": pose_filename,
             "pose_path": pose_path,
             "field_loss": None if field_loss is None or not np.isfinite(field_loss) else float(field_loss),
@@ -164,11 +173,36 @@ class CameraLayerOpt:
         }
         self.epoch_checkpoint_records.append(record)
         self.log_line(
-            f"  Saved epoch checkpoint {epoch_number:03d} | "
+            f"  Saved epoch checkpoint {epoch_number:03d} {stage} | "
             f"pose={pose_filename} | voxel_gap={voxel_gap:.4f} | "
             f"joint_gap={joint_score:.4f} | allcams={all_camera_visible}/{len(self.voxelnormals)}"
         )
         return record
+
+    def write_epoch_checkpoint_summary_csv(self, path):
+        if not getattr(self, "epoch_checkpoint_records", None):
+            return
+        fields = [
+            "epoch",
+            "stage",
+            "mode",
+            "pose_file",
+            "field_loss",
+            "global_step",
+            "voxel_kcoverage_deficit",
+            "exact_joint_observation_gap",
+            "points_seen_by_at_least_kcoverage",
+            "points_seen_by_every_camera",
+            "total_points",
+            "camera_positions",
+        ]
+        with open(path, "w", encoding="utf-8", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fields)
+            writer.writeheader()
+            for record in self.epoch_checkpoint_records:
+                row = {field: record.get(field, "") for field in fields}
+                row["camera_positions"] = json.dumps(record.get("camera_positions", []), separators=(",", ":"))
+                writer.writerow(row)
 
     def write_epoch_checkpoint_manifest(self):
         if not getattr(self, "epoch_checkpoint_records", None):
@@ -178,6 +212,8 @@ class CameraLayerOpt:
             "checkpoint_interval": int(getattr(self.args, "epoch_checkpoint_interval", 0)),
             "checkpoint_epochs": self.epoch_checkpoint_epochs(),
             "non_gradient_reset_enable": bool(getattr(self.args, "non_gradient_reset_enable", True)),
+            "non_gradient_reset_interval": int(getattr(self.args, "non_gradient_reset_interval", 5)),
+            "epoch_checkpoint_save_reset": bool(getattr(self.args, "epoch_checkpoint_save_reset", True)),
             "effective_kcoverage": int(self.args.kcoverage),
             "cameranum": int(self.args.cameranum),
             "records": self.epoch_checkpoint_records,
@@ -186,6 +222,19 @@ class CameraLayerOpt:
         with open(manifest_path, "w", encoding="utf-8") as handle:
             json.dump(payload, handle, indent=2)
         self.log_line(f"Epoch checkpoint manifest saved: {manifest_path}")
+        summary_path = os.path.join(self.posepath, "epoch_checkpoints_summary.csv")
+        self.write_epoch_checkpoint_summary_csv(summary_path)
+        self.log_line(f"Epoch checkpoint summary CSV saved: {summary_path}")
+        self.log_line("Epoch checkpoint summary")
+        for record in self.epoch_checkpoint_records:
+            field_loss = record.get("field_loss")
+            field_loss_text = "none" if field_loss is None else f"{field_loss:.4f}"
+            self.log_line(
+                f"  epoch={record['epoch']:03d} | stage={record.get('stage', ''):<13} | "
+                f"loss={field_loss_text} | voxel_gap={record['voxel_kcoverage_deficit']:.4f} | "
+                f"joint_gap={record['exact_joint_observation_gap']:.4f} | "
+                f"allcams={record['points_seen_by_every_camera']}/{record['total_points']}"
+            )
 
     def loss_weights(self):
         return npToTensor(self.loss_weights_np)
@@ -530,12 +579,17 @@ class CameraLayerOpt:
             epoch_best_global_step = None
             position = copy.deepcopy(bestposition)
             rotation = copy.deepcopy(bestrotation)
+            last_position = position.detach().clone()
+            last_rotation = rotation.detach().clone()
+            last_field_loss = None
+            last_loss_components = None
+            last_global_step = None
             outer_epoch = epoch + 1
             self.log_line(f"Outer epoch {outer_epoch:02d}/{self.args.epoches:02d}")
 
             if (
                 getattr(self.args, "non_gradient_reset_enable", True)
-                and epoch % int(getattr(self.args, "non_gradient_reset_interval", 5)) == 0
+                and outer_epoch % int(getattr(self.args, "non_gradient_reset_interval", 5)) == 0
             ):
                 self.log_line("  Stage 1/2 | Non-gradient camera reset")
                 for min_camera in range(self.args.cameranum):
@@ -613,6 +667,17 @@ class CameraLayerOpt:
                 )
                 if reset_status:
                     self.log_line(f"  Post-reset accepted as {', '.join(reset_status)}")
+                if (
+                    getattr(self.args, "epoch_checkpoint_save_reset", True)
+                    and outer_epoch in checkpoint_epochs
+                ):
+                    self.save_epoch_checkpoint(
+                        outer_epoch,
+                        position,
+                        rotation,
+                        "post_reset",
+                        stage="post_reset",
+                    )
 
             camerapose = torch.cat((position,torch.cat((rotation[:,0,:],rotation[:,2,:]),1)),1)
             self.model.set_pose(camerapose.detach())
@@ -657,6 +722,11 @@ class CameraLayerOpt:
 
                 with torch.no_grad():
                     position, rotation = self.model.get_pose()
+                    last_position = position.detach().clone()
+                    last_rotation = rotation.detach().clone()
+                    last_field_loss = loss_value
+                    last_loss_components = loss_component_values.tolist()
+                    last_global_step = global_step
                     current_voxelmodel, voxel_visibility = voxel_model(
                         self.args,
                         self.voxelnormals,
@@ -774,6 +844,12 @@ class CameraLayerOpt:
                     checkpoint_field_loss = best_field_loss
                     checkpoint_loss_components = best_loss_components
                     checkpoint_global_step = best_global_step
+                elif checkpoint_mode == "epoch_current":
+                    checkpoint_position = last_position
+                    checkpoint_rotation = last_rotation
+                    checkpoint_field_loss = last_field_loss
+                    checkpoint_loss_components = last_loss_components
+                    checkpoint_global_step = last_global_step
                 else:
                     checkpoint_position = bestposition
                     checkpoint_rotation = bestrotation
@@ -785,6 +861,7 @@ class CameraLayerOpt:
                     checkpoint_position,
                     checkpoint_rotation,
                     checkpoint_mode,
+                    stage="post_gradient",
                     field_loss=checkpoint_field_loss,
                     loss_components=checkpoint_loss_components,
                     global_step=checkpoint_global_step,

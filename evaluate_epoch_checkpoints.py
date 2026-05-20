@@ -91,7 +91,9 @@ def run_checkpoint_eval(args, result_dir, record, output_dir):
     pose_file = record["pose_file"]
     pose_path = pose_file if os.path.isabs(pose_file) else os.path.join(pose_dir, pose_file)
     epoch = int(record["epoch"])
-    output_json = os.path.join(output_dir, f"epoch_{epoch:03d}_evaluation.json")
+    stage = record.get("stage", "post_gradient")
+    label = record.get("label") or f"epoch_{epoch:03d}_{stage}"
+    output_json = os.path.join(output_dir, f"{label}_evaluation.json")
 
     command = [
         sys.executable,
@@ -132,13 +134,16 @@ def run_checkpoint_eval(args, result_dir, record, output_dir):
     if args.no_quantize_pixels:
         command.append("--no_quantize_pixels")
 
-    print(f"Evaluating epoch {epoch:03d}: {pose_path}", flush=True)
+    print(f"Evaluating epoch {epoch:03d} {stage}: {pose_path}", flush=True)
     subprocess.run(command, cwd=os.getcwd(), check=True)
 
     with open(output_json, "r", encoding="utf-8") as handle:
         report = json.load(handle)
     row = {
         "epoch": epoch,
+        "stage": stage,
+        "mode": record.get("mode", ""),
+        "label": label,
         "pose_file": pose_file,
         "field_loss": record.get("field_loss", ""),
         "checkpoint_voxel_kcoverage_deficit": record.get("voxel_kcoverage_deficit", ""),
@@ -188,6 +193,7 @@ def main():
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--eval_visibility_mode", type=str, choices=["surface_occlusion", "fov_only"], default=None)
     parser.add_argument("--min_views", type=int, default=None)
+    parser.add_argument("--checkpoint_stages", type=str, nargs="*", choices=["post_reset", "post_gradient"], default=None)
     parser.add_argument("--no_refine", action="store_true")
     parser.add_argument("--no_quantize_pixels", action="store_true")
     args = parse_args_with_json_config(parser, allow_unknown_config_keys=True)
@@ -201,6 +207,9 @@ def main():
     with open(manifest_path, "r", encoding="utf-8") as handle:
         manifest = json.load(handle)
     records = manifest.get("records", [])
+    if args.checkpoint_stages:
+        stages = set(args.checkpoint_stages)
+        records = [record for record in records if record.get("stage", "post_gradient") in stages]
     if not records:
         raise ValueError(f"Checkpoint manifest contains no records: {manifest_path}")
 

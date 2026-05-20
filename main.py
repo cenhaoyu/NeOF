@@ -77,7 +77,10 @@ if __name__ =='__main__':
     parser.add_argument('--non_gradient_reset_interval',type=int,default=5)
     parser.add_argument('--epoch_checkpoint_interval',type=int,default=0)
     parser.add_argument('--epoch_checkpoint_epochs',type=int,nargs='*',default=None)
-    parser.add_argument('--epoch_checkpoint_mode',type=str,choices=['epoch_best','global_best'],default='epoch_best')
+    parser.add_argument('--epoch_checkpoint_mode',type=str,choices=['epoch_best','epoch_current','global_best'],default='epoch_best')
+    parser.add_argument('--epoch_checkpoint_save_reset',dest='epoch_checkpoint_save_reset',action='store_true')
+    parser.add_argument('--no_epoch_checkpoint_save_reset',dest='epoch_checkpoint_save_reset',action='store_false')
+    parser.set_defaults(epoch_checkpoint_save_reset=True)
     parser.add_argument('--config',type=str,default=None)
     parser.add_argument('--decay',type=float,default=1e-4)
     parser.add_argument('--solver',type=str,choices=['neof','bip'],default='neof')
@@ -418,6 +421,7 @@ if __name__ =='__main__':
         "epoch_checkpoint_interval": int(args.epoch_checkpoint_interval),
         "epoch_checkpoint_epochs": args.epoch_checkpoint_epochs,
         "epoch_checkpoint_mode": args.epoch_checkpoint_mode,
+        "epoch_checkpoint_save_reset": bool(args.epoch_checkpoint_save_reset),
     }
     with open(os.path.join(pcdpath, "run_info.json"), "w", encoding="utf-8") as handle:
         json.dump(run_info, handle, indent=2)
@@ -432,9 +436,11 @@ if __name__ =='__main__':
             handle.write(f"require_all_cameras_coverage: {bool(args.require_all_cameras_coverage)}\n")
             handle.write(f"effective_kcoverage: {int(args.kcoverage)}\n")
             handle.write(f"non_gradient_reset_enable: {bool(args.non_gradient_reset_enable)}\n")
+            handle.write(f"non_gradient_reset_interval: {int(args.non_gradient_reset_interval)}\n")
             handle.write(f"epoch_checkpoint_interval: {int(args.epoch_checkpoint_interval)}\n")
             handle.write(f"epoch_checkpoint_epochs: {args.epoch_checkpoint_epochs}\n")
             handle.write(f"epoch_checkpoint_mode: {args.epoch_checkpoint_mode}\n")
+            handle.write(f"epoch_checkpoint_save_reset: {bool(args.epoch_checkpoint_save_reset)}\n")
             handle.write("\n")
     else:
         args.optimization_key_log_path = None
