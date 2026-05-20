@@ -1,4 +1,6 @@
 import copy
+import json
+import os
 import time
 
 from camera_constraints import (
@@ -96,6 +98,94 @@ class CameraLayerOpt:
                 return True
             return False
         return joint_score < best_joint_score
+
+    def epoch_checkpoint_epochs(self):
+        requested = set()
+        interval = int(getattr(self.args, "epoch_checkpoint_interval", 0))
+        if interval > 0:
+            requested.update(range(interval, int(self.args.epoches) + 1, interval))
+        explicit_epochs = getattr(self.args, "epoch_checkpoint_epochs", None)
+        if explicit_epochs:
+            requested.update(int(epoch) for epoch in explicit_epochs)
+        return sorted(epoch for epoch in requested if 1 <= epoch <= int(self.args.epoches))
+
+    def save_epoch_checkpoint(
+        self,
+        epoch_number,
+        position,
+        rotation,
+        checkpoint_mode,
+        field_loss=None,
+        loss_components=None,
+        global_step=None,
+    ):
+        position_np = position.detach().cpu().numpy() if hasattr(position, "detach") else np.asarray(position)
+        rotation_np = rotation.detach().cpu().numpy() if hasattr(rotation, "detach") else np.asarray(rotation)
+        world_position_np = position_np * self.scale[0] + self.scale[1]
+        pose_filename = f"epoch_{int(epoch_number):03d}.npy"
+        pose_path = os.path.join(self.posepath, pose_filename)
+        saveTrainingResult(pose_path, npToTensor(position_np), npToTensor(rotation_np), self.scale)
+
+        voxelmodel, visibility = voxel_model(
+            self.args,
+            self.voxelnormals,
+            rotation_np,
+            position_np,
+        )
+        voxel_gap, coverage = self.coverage_gap_from_visibility(visibility, weighted=True)
+        joint_score = self.global_need_score(voxelmodel[:, 6:].cpu().numpy(), weighted=True)
+        per_camera_visible = np.sum(visibility > 0, axis=0).astype(int).tolist()
+        all_camera_visible = int(np.sum(np.sum(visibility > 0, axis=1) == self.args.cameranum))
+        kcoverage_visible = int(np.sum(coverage >= self.args.kcoverage))
+
+        record = {
+            "epoch": int(epoch_number),
+            "mode": str(checkpoint_mode),
+            "pose_file": pose_filename,
+            "pose_path": pose_path,
+            "field_loss": None if field_loss is None or not np.isfinite(field_loss) else float(field_loss),
+            "loss_components": None
+            if loss_components is None
+            else {
+                "visibility": float(loss_components[0]),
+                "camera_camera_angle": float(loss_components[1]),
+                "camera_object_angle": float(loss_components[2]),
+                "sampling_quality": float(loss_components[3]),
+            },
+            "global_step": None if global_step is None else int(global_step),
+            "voxel_kcoverage_deficit": float(voxel_gap),
+            "exact_joint_observation_gap": float(joint_score),
+            "per_camera_visible_points": per_camera_visible,
+            "points_seen_by_at_least_kcoverage": kcoverage_visible,
+            "points_seen_by_every_camera": all_camera_visible,
+            "total_points": int(len(self.voxelnormals)),
+            "camera_positions": world_position_np.tolist(),
+            "camera_rotation_matrices": rotation_np.tolist(),
+        }
+        self.epoch_checkpoint_records.append(record)
+        self.log_line(
+            f"  Saved epoch checkpoint {epoch_number:03d} | "
+            f"pose={pose_filename} | voxel_gap={voxel_gap:.4f} | "
+            f"joint_gap={joint_score:.4f} | allcams={all_camera_visible}/{len(self.voxelnormals)}"
+        )
+        return record
+
+    def write_epoch_checkpoint_manifest(self):
+        if not getattr(self, "epoch_checkpoint_records", None):
+            return
+        payload = {
+            "checkpoint_mode": getattr(self.args, "epoch_checkpoint_mode", "epoch_best"),
+            "checkpoint_interval": int(getattr(self.args, "epoch_checkpoint_interval", 0)),
+            "checkpoint_epochs": self.epoch_checkpoint_epochs(),
+            "non_gradient_reset_enable": bool(getattr(self.args, "non_gradient_reset_enable", True)),
+            "effective_kcoverage": int(self.args.kcoverage),
+            "cameranum": int(self.args.cameranum),
+            "records": self.epoch_checkpoint_records,
+        }
+        manifest_path = os.path.join(self.posepath, "epoch_checkpoints.json")
+        with open(manifest_path, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2)
+        self.log_line(f"Epoch checkpoint manifest saved: {manifest_path}")
 
     def loss_weights(self):
         return npToTensor(self.loss_weights_np)
@@ -395,10 +485,16 @@ class CameraLayerOpt:
             self.log_line(line)
 
     def opt(self,camerapose):
+        self.epoch_checkpoint_records = []
+        checkpoint_epochs = set(self.epoch_checkpoint_epochs())
+        checkpoint_mode = getattr(self.args, "epoch_checkpoint_mode", "epoch_best")
         bestposition = camerapose[:,:3].detach().clone()
         bestrotation = compute_rotation_matrix_from_ortho6d(camerapose[:,3:]).detach().clone()
         best_joint_score = np.inf
         best_voxel_gap = np.inf
+        best_field_loss = None
+        best_loss_components = None
+        best_global_step = None
         bbp = bestposition.detach().clone()
         bbr = bestrotation.detach().clone()
         self.model.set_pose(camerapose.detach())
@@ -429,12 +525,18 @@ class CameraLayerOpt:
         for epoch in range(self.args.epoches):
             epoch_best_joint_score = np.inf
             epoch_best_voxel_gap = np.inf
+            epoch_best_field_loss = None
+            epoch_best_loss_components = None
+            epoch_best_global_step = None
             position = copy.deepcopy(bestposition)
             rotation = copy.deepcopy(bestrotation)
             outer_epoch = epoch + 1
             self.log_line(f"Outer epoch {outer_epoch:02d}/{self.args.epoches:02d}")
 
-            if epoch % 5 == 0:
+            if (
+                getattr(self.args, "non_gradient_reset_enable", True)
+                and epoch % int(getattr(self.args, "non_gradient_reset_interval", 5)) == 0
+            ):
                 self.log_line("  Stage 1/2 | Non-gradient camera reset")
                 for min_camera in range(self.args.cameranum):
                     if self.args.isscene:
@@ -479,6 +581,9 @@ class CameraLayerOpt:
                 ):
                     epoch_best_voxel_gap = reset_rate_v
                     epoch_best_joint_score = reset_joint_score
+                    epoch_best_field_loss = None
+                    epoch_best_loss_components = None
+                    epoch_best_global_step = None
                     bestposition = position.detach().clone()
                     bestrotation = rotation.detach().clone()
                     reset_status.append("epoch best")
@@ -490,6 +595,9 @@ class CameraLayerOpt:
                     ):
                         best_voxel_gap = reset_rate_v
                         best_joint_score = reset_joint_score
+                        best_field_loss = None
+                        best_loss_components = None
+                        best_global_step = None
                         bbp = position.detach().clone()
                         bbr = rotation.detach().clone()
                         reset_status.append("global best")
@@ -543,6 +651,9 @@ class CameraLayerOpt:
                 L.backward()
                 pose_optimizer.step()
                 torch.cuda.empty_cache()
+                global_step = epoch * self.args.iterations + iters
+                loss_value = float(L.detach().cpu())
+                loss_component_values = loss_components.detach().cpu().numpy()
 
                 with torch.no_grad():
                     position, rotation = self.model.get_pose()
@@ -571,17 +682,22 @@ class CameraLayerOpt:
                 if self.score_is_better(rate_v, joint_score, epoch_best_voxel_gap, epoch_best_joint_score):
                     epoch_best_voxel_gap = rate_v
                     epoch_best_joint_score = joint_score
+                    epoch_best_field_loss = loss_value
+                    epoch_best_loss_components = loss_component_values.tolist()
+                    epoch_best_global_step = global_step
                     new_epoch_best = True
                     bestposition = position.detach().clone()
                     bestrotation = rotation.detach().clone()
                     if self.score_is_better(rate_v, joint_score, best_voxel_gap, best_joint_score):
                         best_voxel_gap = rate_v
                         best_joint_score = joint_score
+                        best_field_loss = loss_value
+                        best_loss_components = loss_component_values.tolist()
+                        best_global_step = global_step
                         new_global_best = True
                         bbp = position.detach().clone()
                         bbr = rotation.detach().clone()
 
-                global_step = epoch * self.args.iterations + iters
                 self.log_writer.add_scalar("loss/total",L,global_step)
                 self.log_writer.add_scalar("loss/raw_vis",raw_loss_components[0],global_step)
                 self.log_writer.add_scalar("loss/raw_cc",raw_loss_components[1],global_step)
@@ -608,8 +724,6 @@ class CameraLayerOpt:
                 joint_gap_label = "weighted joint gap" if self.args.occupancy_map_enable else "joint observation gap"
                 co_label = "camera-object angle deficit (disabled)" if self.fov_only_visibility else "camera-object angle deficit"
                 quality_label = "sampling-quality deficit"
-                loss_value = float(L.detach().cpu())
-                loss_component_values = loss_components.detach().cpu().numpy()
                 compact_pose_line = (
                     f"  Pose step {iters+1:02d}/{self.args.iterations:02d} | "
                     f"global={global_step:03d}{status_text} | "
@@ -651,6 +765,32 @@ class CameraLayerOpt:
                         f"      unweighted joint gap        = {unweighted_joint_score:.4f}",
                         console=not self.compact_log_mode()
                     )
+
+            epoch_number = epoch + 1
+            if epoch_number in checkpoint_epochs:
+                if checkpoint_mode == "global_best":
+                    checkpoint_position = bbp
+                    checkpoint_rotation = bbr
+                    checkpoint_field_loss = best_field_loss
+                    checkpoint_loss_components = best_loss_components
+                    checkpoint_global_step = best_global_step
+                else:
+                    checkpoint_position = bestposition
+                    checkpoint_rotation = bestrotation
+                    checkpoint_field_loss = epoch_best_field_loss
+                    checkpoint_loss_components = epoch_best_loss_components
+                    checkpoint_global_step = epoch_best_global_step
+                self.save_epoch_checkpoint(
+                    epoch_number,
+                    checkpoint_position,
+                    checkpoint_rotation,
+                    checkpoint_mode,
+                    field_loss=checkpoint_field_loss,
+                    loss_components=checkpoint_loss_components,
+                    global_step=checkpoint_global_step,
+                )
+
+        self.write_epoch_checkpoint_manifest()
 
         with torch.no_grad():
             best_voxelmodel, best_visibility = voxel_model(

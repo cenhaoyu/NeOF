@@ -132,10 +132,23 @@
   "decay": 0.0001,
 
   // Number of outer hybrid-optimization epochs.
-  "epoches": 10,
+  // For epoch-difference experiments, run one long optimization and save checkpoints below.
+  "epoches": 30,
 
   // Number of gradient-based pose refinement steps per outer epoch.
   "iterations": 2,
+
+  // Disable the non-gradient reset for epoch-to-epoch comparison experiments.
+  // This keeps the trajectory smoother and makes epoch checkpoints easier to interpret.
+  "non_gradient_reset_enable": false,
+  "non_gradient_reset_interval": 5,
+
+  // Save eval-compatible pose checkpoints at epoch_005.npy, epoch_010.npy, ...
+  // These files are written under resultModel/.../pose/ and can be passed to
+  // evaluate_triangulation.py via --optimized_pose.
+  "epoch_checkpoint_interval": 5,
+  "epoch_checkpoint_epochs": [5, 10, 15, 20, 25, 30],
+  "epoch_checkpoint_mode": "epoch_best",
 
   // NeOF loss weights. These are active only when solver="neof".
   // They are normalized internally, so only their relative magnitudes matter.

@@ -71,6 +71,13 @@ if __name__ =='__main__':
     parser.add_argument('--cameranum',type=int,default=10)
     parser.add_argument('--epoches',type=int,default=20)
     parser.add_argument('--iterations',type=int,default=20)
+    parser.add_argument('--non_gradient_reset_enable',dest='non_gradient_reset_enable',action='store_true')
+    parser.add_argument('--no_non_gradient_reset_enable',dest='non_gradient_reset_enable',action='store_false')
+    parser.set_defaults(non_gradient_reset_enable=True)
+    parser.add_argument('--non_gradient_reset_interval',type=int,default=5)
+    parser.add_argument('--epoch_checkpoint_interval',type=int,default=0)
+    parser.add_argument('--epoch_checkpoint_epochs',type=int,nargs='*',default=None)
+    parser.add_argument('--epoch_checkpoint_mode',type=str,choices=['epoch_best','global_best'],default='epoch_best')
     parser.add_argument('--config',type=str,default=None)
     parser.add_argument('--decay',type=float,default=1e-4)
     parser.add_argument('--solver',type=str,choices=['neof','bip'],default='neof')
@@ -283,6 +290,12 @@ if __name__ =='__main__':
         raise ValueError("pose_lr_decay must be positive")
     if args.neof_pose_log_interval < 0:
         raise ValueError("neof_pose_log_interval must be non-negative")
+    if args.non_gradient_reset_interval < 1:
+        raise ValueError("non_gradient_reset_interval must be at least 1")
+    if args.epoch_checkpoint_interval < 0:
+        raise ValueError("epoch_checkpoint_interval must be non-negative")
+    if args.epoch_checkpoint_epochs is not None and any(epoch < 1 for epoch in args.epoch_checkpoint_epochs):
+        raise ValueError("epoch_checkpoint_epochs must contain positive epoch numbers")
     if args.occupancy_map_enable and args.occupancy_map_mode != 'free_space_box' and not args.occupancy_map_file:
         raise ValueError("occupancy_map_file must be provided when occupancy_map_enable=true unless occupancy_map_mode=free_space_box")
     if args.occupancy_map_enable and args.occupancy_map_mode == 'free_space_box':
@@ -400,6 +413,11 @@ if __name__ =='__main__':
         "run_timestamp": args.path.rstrip(os.sep).split("_")[-1] if args.timestamp_output else args.run_timestamp,
         "require_all_cameras_coverage": bool(args.require_all_cameras_coverage),
         "effective_kcoverage": int(args.kcoverage),
+        "non_gradient_reset_enable": bool(args.non_gradient_reset_enable),
+        "non_gradient_reset_interval": int(args.non_gradient_reset_interval),
+        "epoch_checkpoint_interval": int(args.epoch_checkpoint_interval),
+        "epoch_checkpoint_epochs": args.epoch_checkpoint_epochs,
+        "epoch_checkpoint_mode": args.epoch_checkpoint_mode,
     }
     with open(os.path.join(pcdpath, "run_info.json"), "w", encoding="utf-8") as handle:
         json.dump(run_info, handle, indent=2)
@@ -413,6 +431,10 @@ if __name__ =='__main__':
             handle.write(f"target_visibility_mode: {args.target_visibility_mode}\n")
             handle.write(f"require_all_cameras_coverage: {bool(args.require_all_cameras_coverage)}\n")
             handle.write(f"effective_kcoverage: {int(args.kcoverage)}\n")
+            handle.write(f"non_gradient_reset_enable: {bool(args.non_gradient_reset_enable)}\n")
+            handle.write(f"epoch_checkpoint_interval: {int(args.epoch_checkpoint_interval)}\n")
+            handle.write(f"epoch_checkpoint_epochs: {args.epoch_checkpoint_epochs}\n")
+            handle.write(f"epoch_checkpoint_mode: {args.epoch_checkpoint_mode}\n")
             handle.write("\n")
     else:
         args.optimization_key_log_path = None
