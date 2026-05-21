@@ -132,8 +132,7 @@
   "decay": 0.0001,
 
   // Number of outer hybrid-optimization epochs.
-  // For epoch-difference experiments, run one long optimization and save checkpoints below.
-  "epoches": 30,
+  "epoches": 10,
 
   // Number of gradient-based pose refinement steps per outer epoch.
   "iterations": 2,
@@ -142,7 +141,7 @@
   // choose the best global layout by coverage + triangulation-angle proxy,
   // then run gradient refinement from that selected candidate.
   "reset_search_enable": true,
-  "reset_search_trials": 30,
+  "reset_search_trials": 10,
   "reset_search_top_k": 1,
   "reset_search_score": "angle",
   "reset_search_angle_weight": 0.25,
