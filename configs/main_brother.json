@@ -164,15 +164,28 @@
   "occupancy_map_normalize": "mean1",
   
   // ------------------------------
-  // Active mode: free_space_box + uniform
-  // Comment out this whole block when switching to another mode below.
-  "occupancy_map_mode": "free_space_box",
-  "occupancy_box_distribution": "uniform",
-  "occupancy_box_min": [-5, 0, 0],
-  "occupancy_box_max": [5, 1, 2],
-  "occupancy_box_grid_step": 0.2,
-  "show_occupancy_route": false,
-  "show_occupancy_route_direction": false,
+  // Alternative mode: free_space_box + uniform
+  // Uncomment this whole block and comment out the active block below.
+  // "occupancy_map_mode": "free_space_box",
+  // "occupancy_box_distribution": "uniform",
+  // "occupancy_box_min": [-5, 0, 0],
+  // "occupancy_box_max": [5, 1, 2],
+  // "occupancy_box_grid_step": 0.2,
+  // "show_occupancy_route": false,
+  // "show_occupancy_route_direction": false,
+
+  // ------------------------------
+  // Alternative mode: free_space_box + gaussian
+  // Uncomment this whole block and comment out the active block below.
+  // "occupancy_map_mode": "free_space_box",
+  // "occupancy_box_distribution": "gaussian",
+  // "occupancy_box_min": [-5, 0, 0],
+  // "occupancy_box_max": [5, 1, 2],
+  // "occupancy_box_grid_step": 0.2,
+  // "occupancy_gaussian_center": [0.0, 0.5, 1.0],
+  // "occupancy_gaussian_sigma_xyz": [0.5, 0.2, 0.5],
+  // "show_occupancy_route": false,
+  // "show_occupancy_route_direction": false,
 
   // ------------------------------
   // Alternative mode: route_kde
@@ -185,29 +198,15 @@
   // "show_occupancy_route_direction": true,
 
   // ------------------------------
-  // Alternative mode: free_space_box + gaussian
-  // Uncomment this whole block and comment out the active block above.
-  // "occupancy_map_mode": "free_space_box",
-  // "occupancy_box_distribution": "gaussian",
-  // "occupancy_box_min": [-5, 0, 0],
-  // "occupancy_box_max": [5, 1, 2],
-  // "occupancy_box_grid_step": 0.2,
-  // "occupancy_gaussian_center": [0.0, 0.5, 1],
-  // "occupancy_gaussian_sigma_xyz": [0.5, 0.2, 0.5],
-  // "show_occupancy_route": false,
-  // "show_occupancy_route_direction": false,
-
-  // ------------------------------
-  // Alternative mode: free_space_box + gaussian_mixture
-  // Uncomment this whole block and comment out the active block above.
-  // "occupancy_map_mode": "free_space_box",
-  // "occupancy_box_distribution": "gaussian_mixture",
-  // "occupancy_map_file": "occupancy_free_space_gaussian_mixture_example.json",
-  // "occupancy_box_min": [-5, 0, 0],
-  // "occupancy_box_max": [5, 1, 2],
-  // "occupancy_box_grid_step": 0.2,
-  // "show_occupancy_route": false,
-  // "show_occupancy_route_direction": false,
+  // Active mode: free_space_box + gaussian_mixture
+  "occupancy_map_mode": "free_space_box",
+  "occupancy_box_distribution": "gaussian_mixture",
+  "occupancy_map_file": "occupancy_free_space_gaussian_mixture_example.json",
+  "occupancy_box_min": [-5, 0, 0],
+  "occupancy_box_max": [5, 1, 2],
+  "occupancy_box_grid_step": 0.2,
+  "show_occupancy_route": false,
+  "show_occupancy_route_direction": false,
 
   // Shared occupancy visualization settings.
   // In free_space_box mode, occupancy_box_grid_step is the actual support discretization in meters.
