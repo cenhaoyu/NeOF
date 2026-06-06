@@ -1,77 +1,224 @@
-# Neural Observation Field Guided Hybrid Optimization of Camera Placement
+# NeOF Camera Placement Experiments
 
-This work is based on our RAL 2024 paper [NeOF Guided Hybrid Opt. of Camera Placement](https://ieeexplore.ieee.org/document/10638696). we present a hybrid camera placement optimization approach that incorporates both gradient-based and non-gradient-based optimization methods guided by a neural observation field. Our work is implemented in PyTorch.
+This repository is based on the RAL 2024 paper
+[NeOF Guided Hybrid Optimization of Camera Placement](https://ieeexplore.ieee.org/document/10638696).
+This branch keeps the original NeOF solver and adds a comparable BIP baseline, mocap-marker target preprocessing,
+shared visualization/evaluation outputs, timestamped result folders, and helper tools for Blender pose export.
 
-**Author:** Yihan Cao, Jiazhao Zhang, Zhinan Yu, and Kai Xu
+The preferred workflow is the mocap data collection setup in `configs/main_mocap.json`.
 
-**Affiliation:** National University of Defense Technology
+## Main Workflow
 
-<img src='img/teaser.jpeg'/>  
+The default config uses preprocessed mocap marker support points:
 
-## Hybrid Camera Placement Optimization Framework
-
-Camera placement is crutial in multi-camera systems such as virtual reality, autonomous driving, and high-quality reconstruction. The camera placement challenge lies in the nonlinear nature of high-dimensional parameters and the unavailability of gradients for target functions like coverage and visibility. Consequently, most existing methods tackle this challenge by leveraging non-gradient-based optimization methods. In this work, we present a hybrid camera placement optimization approach that incorporates both gradient-based and non-gradient-based optimization methods. This design allows our method to enjoy the advantages of smooth optimization convergence and robustness from gradient-based and non-gradient-based optimization, respectively. To bridge the two disparate optimization methods, we propose a neural observation field, which implicitly encodes the coverage and observation quality. The neural observation field provides the measurements of the camera observations and corresponding gradients without the assumption of target scenes, making our method applicable to diverse scenarios, including 2D planar shapes, 3D objects, and room-scale 3D scenes. Extensive experiments on diverse datasets demonstrate that our method achieves state-of-the-art performance, while requiring only a fraction (8x less) of the typical computation time. Furthermore, we conducted a real-world experiment using a custom-built capture system, confirming the resilience of our approach to real-world environmental noise.
-
-<img src='img/pipeline.jpeg'/>
-
-
-
-## Installation
-
-The code has been tested only with Python 3.8 on Ubuntu 22.04.
-
-
-- Install [pytorch](https://pytorch.org/) according to your system configuration. The code is tested on pytorch v2.2.0 and cudatoolkit v11.8. If you are using conda:
+```text
+mocap_data/{mocap_sequence}_targets.csv
 ```
-# CUDA 11.8
-conda install pytorch==2.2.0 torchvision==0.17.0 torchaudio==2.2.0 pytorch-cuda=11.8 -c pytorch -c nvidia
-# CPU Only
-conda install pytorch==2.2.0 torchvision==0.17.0 torchaudio==2.2.0 cpuonly -c pytorch
+
+The optimization output directory is named automatically with:
+
+```text
+{mocap_sequence}_{solver}_{camera_constraint_shape}_{YYYYMMDDHHMMSS}
 ```
-## Setup
-Clone the repository and install other requirements:
+
+For example:
+
+```text
+resultModel/random/mocap/p08_bird_correct_neof_dome_20260520120314/
 ```
-git clone https://github.com/yhanCao/NeOF-HybridCamOpt.git
-cd NeOF-HybridCamOpt/
+
+The default NeOF workflow is:
+
+1. Load the same mocap support points for all solvers.
+2. Generate a non-gradient reset-search set.
+3. Select the best reset candidate by coverage/triangulation-angle proxy.
+4. Run gradient refinement from that candidate.
+5. Save the same pose, visualization, and evaluation-compatible files for NeOF and BIP.
+
+Epoch checkpoint evaluation is disabled by default on this branch. The normal evaluation output is the concise
+`Initial` / `Optimized` / `Comparison` report from `evaluate_triangulation.py`.
+
+## Environment
+
+The code is currently used with the conda environment name `neof_cam`.
+
+```bash
+conda env create -f environment.yml
+conda activate neof_cam
+```
+
+If your machine does not have CUDA 11.8, edit `environment.yml` and replace the CUDA PyTorch entries with the
+CPU-only PyTorch install recommended by the official PyTorch selector.
+
+For an already-created environment, install/update the non-PyTorch packages with:
+
+```bash
 pip install -r requirements.txt
 ```
 
+## Mocap Data
 
-## Datasets  
-We provide examples of 2D, 3D_model and real-world scanning objects in data/ folder. You can also download objects or scenes from other datasets.  
-For 2D models, download the [ABC dataset](https://deep-geometry.github.io/abc-dataset/).  
-For 3D models, download the [GSO dataset](https://huggingface.co/datasets/SEU-WYL/GSO-SAD/tree/main).  
-For 3D scenes, download the [Replica dataset](https://github.com/facebookresearch/Replica-Dataset).
+Raw mocap JSON exports can be large and are ignored by Git:
 
+```text
+mocap_data/*.json
+```
 
+Compact preprocessed targets and summaries can be tracked:
 
-### For optimization: 
-For optimization the camera layer:
+```text
+mocap_data/*_targets.csv
+mocap_data/*_targets_summary.json
+```
+
+To preprocess a raw mocap sequence:
+
 ```bash
-python main.py --path random/brother/ \
---cameranum 10 --epoches 20 --iterations 20 \
---isscene False --modelname data/3D_model/1Brother/visual_geometry.obj
+python preprocess_mocap_markers.py \
+  --mocap_sequence p08_bird_correct \
+  --frame_sampling farthest \
+  --max_frames 50 \
+  --voxel_size 0.02
 ```
 
-The current implementation uses direct world coordinates. With `model_physical_height` set in the config, the toy model is scaled to a human-sized target and saved poses / evaluation metrics are reported in meters.
+This writes:
 
-You can also put arguments into a JSON config file and keep the command line short:
+```text
+mocap_data/p08_bird_correct_targets.csv
+mocap_data/p08_bird_correct_targets_summary.json
 ```
-python main.py --config configs/main_brother.json
-python evaluate_triangulation.py --config configs/main_brother.json
+
+## Run Optimization
+
+NeOF:
+
+```bash
+python main.py \
+  --config configs/main_mocap.json \
+  --mocap_sequence p08_bird_correct \
+  --solver neof
 ```
 
-The config parser accepts `//`, `#`, and `/* ... */` comments, so the example config files can document each parameter inline.  
-`evaluate_triangulation.py` reuses the main config and ignores optimization-only keys; evaluation-specific options can still be overridden on the command line.
-For heterogeneous rigs, prefer defining a `camera_models` list in the config. Each camera can use its own resolution, FoV / focal length and `min_projected_voxel_px` threshold for the sampling-quality deficit term.
+BIP, using the same input targets and output conventions:
 
-
-## Demo Video
-
-![model](img/model.gif) &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;![scene](img/scene.gif)
-
-## Citation
+```bash
+python main.py \
+  --config configs/main_mocap.json \
+  --mocap_sequence p08_bird_correct \
+  --solver bip
 ```
+
+The BIP config defaults to the OR-Tools CP-SAT backend:
+
+```jsonc
+"bip_solver_backend": "ortools_cpsat"
+```
+
+## Evaluate
+
+Evaluate the latest NeOF run:
+
+```bash
+python evaluate_triangulation.py \
+  --config configs/main_mocap.json \
+  --mocap_sequence p08_bird_correct \
+  --solver neof \
+  --run_timestamp latest \
+  --pixel_noise_std 10 \
+  --trials 5 \
+  --seed 0
+```
+
+Evaluate the latest BIP run:
+
+```bash
+python evaluate_triangulation.py \
+  --config configs/main_mocap.json \
+  --mocap_sequence p08_bird_correct \
+  --solver bip \
+  --run_timestamp latest \
+  --pixel_noise_std 10 \
+  --trials 5 \
+  --seed 0
+```
+
+For mocap targets, the config uses `eval_visibility_mode: "fov_only"` so the reconstruction rate measures camera
+field-of-view coverage of marker/support points without marker self-occlusion.
+
+## Visualize Saved Results
+
+Open a saved visualization scene:
+
+```bash
+python view_saved_scene.py \
+  --scene resultModel/random/mocap/p08_bird_correct_neof_dome_YYYYMMDDHHMMSS/visualization/optimized_scene.zip
+```
+
+Export a saved reset-search pose as the same Open3D scene format:
+
+```bash
+python export_pose_visualization.py \
+  --config configs/main_mocap.json \
+  --mocap_sequence p08_bird_correct \
+  --solver neof \
+  --run_timestamp latest \
+  --pose_stage reset_search_selected
+```
+
+## Print Camera Poses
+
+Print initial and optimized poses in Blender-friendly command fragments:
+
+```bash
+python print_optimized_camera_poses.py \
+  --config configs/main_mocap.json \
+  --mocap_sequence p08_bird_correct \
+  --solver neof \
+  --run_timestamp latest \
+  --pose_name both \
+  --rotation_convention blender
+```
+
+Use `--rotation_convention neof` to print Euler angles directly from the saved NeOF world-to-camera rotation
+instead of converting OpenCV camera axes to Blender camera-object axes.
+
+## Useful Config Knobs
+
+Camera placement constraint:
+
+```jsonc
+"camera_constraint_shape": "dome"
+```
+
+Other supported shapes include:
+
+```text
+box, cylinder, dome, box_surface, box_walls, plane, cylinder_surface, dome_surface
+```
+
+Solver selection:
+
+```jsonc
+"solver": "neof"
+```
+
+or:
+
+```jsonc
+"solver": "bip"
+```
+
+All-camera coverage:
+
+```jsonc
+"require_all_cameras_coverage": true
+```
+
+This makes the effective coverage target equal to the configured camera count.
+
+## Original Citation
+
+```bibtex
 @article{cao2024neural,
   title={Neural Observation Field Guided Hybrid Optimization of Camera Placement},
   author={Cao, Yihan and Zhang, Jiazhao and Yu, Zhinan and Xu, Kai},

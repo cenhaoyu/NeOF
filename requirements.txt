@@ -1,9 +1,9 @@
-argparse
+# Install PyTorch separately through conda or the official PyTorch selector.
 numpy==1.26.4
-itertools
-open3d
-matplotlib
 scipy
+open3d==0.19.0
+matplotlib
+pillow
+tensorboard
 ortools==9.10.4067
 fsspec
-time

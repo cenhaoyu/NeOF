@@ -28,3 +28,7 @@ ENV/
 resultModel/
 tensorboardModel/
 modelpath/
+
+# Raw mocap exports can be large and are usually regenerated outside the repo.
+mocap_data/*.json
+!mocap_data/*_targets_summary.json
