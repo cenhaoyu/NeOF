@@ -376,9 +376,9 @@
 
   // square room vertical walls
   // Uses only the four vertical side walls of the axis-aligned box, not the floor or ceiling.
-  // "camera_constraint_shape": "box_walls",
-  // "camera_constraint_box_min": [-1.35, -3.0, 0.2],
-  // "camera_constraint_box_max": [4.65, 3.0, 2.2],
+  "camera_constraint_shape": "box_walls",
+  "camera_constraint_box_min": [-1.35, -3.0, 0.2],
+  "camera_constraint_box_max": [4.65, 3.0, 2.2],
 
   // cylinder volume
   // center_xy = [cx, cy]
@@ -402,9 +402,9 @@
   // base_center = [cx, cy, z_base]
   // radius_xyz = [rx, ry, rz]
   // ((x-cx)/rx)^2 + ((y-cy)/ry)^2 + ((z-z_base)/rz)^2 <= 1
-  "camera_constraint_shape": "dome",
-  "camera_constraint_dome_base_center": [1.65, 0.0, 0.2],
-  "camera_constraint_dome_radius_xyz": [3.0, 3.0, 2.0],
+  // "camera_constraint_shape": "dome",
+  // "camera_constraint_dome_base_center": [1.65, 0.0, 0.2],
+  // "camera_constraint_dome_radius_xyz": [3.0, 3.0, 2.0],
 
   // dome surface
   // Uses the same parameterization as "dome", but restricts camera centers

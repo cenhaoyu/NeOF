@@ -24,7 +24,7 @@ The optimization output directory is named automatically with:
 For example:
 
 ```text
-resultModel/random/mocap/p08_bird_correct_neof_dome_20260520120314/
+resultModel/random/mocap/p08_bird_correct_neof_box_walls_20260520120314/
 ```
 
 The default NeOF workflow is:
@@ -151,7 +151,7 @@ Open a saved visualization scene:
 
 ```bash
 python view_saved_scene.py \
-  --scene resultModel/random/mocap/p08_bird_correct_neof_dome_YYYYMMDDHHMMSS/visualization/optimized_scene.zip
+  --scene resultModel/random/mocap/p08_bird_correct_neof_box_walls_YYYYMMDDHHMMSS/visualization/optimized_scene.zip
 ```
 
 Export a saved reset-search pose as the same Open3D scene format:
@@ -187,7 +187,7 @@ instead of converting OpenCV camera axes to Blender camera-object axes.
 Camera placement constraint:
 
 ```jsonc
-"camera_constraint_shape": "dome"
+"camera_constraint_shape": "box_walls"
 ```
 
 Other supported shapes include:
